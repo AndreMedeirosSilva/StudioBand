@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "vercel": {
+      "url": "https://mcp.vercel.com/andremedeirossilvas-projects/amstudioband"
+    },
+    "google-cloud": {
+      "url": "https://cloudresourcemanager.googleapis.com/mcp"
+    }
+  }
+}
