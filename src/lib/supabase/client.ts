@@ -1,7 +1,7 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { Platform } from 'react-native';
 import { getSupabaseApiKey, getSupabaseUrl, isSupabaseConfigured } from './config';
+import { supabaseAuthStorage } from './authStorage';
 
 let client: SupabaseClient | null = null;
 
@@ -12,7 +12,7 @@ export function getSupabase(): SupabaseClient {
   if (!client) {
     client = createClient(getSupabaseUrl(), getSupabaseApiKey(), {
       auth: {
-        storage: AsyncStorage,
+        storage: supabaseAuthStorage,
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: Platform.OS === 'web',

@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { View, ActivityIndicator, StyleSheet, Platform, Linking } from 'react-native';
-import { WelcomeScreen } from '../screens/WelcomeScreen';
 import { AuthScreen } from '../screens/AuthScreen';
 import { RegisterScreen } from '../screens/RegisterScreen';
 import { HomeScreen } from '../screens/HomeScreen';
@@ -21,20 +20,16 @@ import {
   type UserProfile,
 } from '../storage/persistSession';
 import { hydrateProfileFromSupabase } from '../lib/supabase/sessionHydration';
-import { signOutSupabaseIfNeeded } from '../lib/supabase/remoteRegistry';
+import { signOutSupabaseIfNeeded, buildPersistedProfileForUser } from '../lib/supabase/remoteRegistry';
+import { isSupabaseConfigured } from '../lib/supabase/config';
+import { getSupabase } from '../lib/supabase/client';
 import { COLORS } from '../theme';
 
 export type { UserProfile };
 
-export type Screen =
-  | 'welcome'
-  | 'auth'
-  | 'register'
-  | 'home'
-  | 'booking'
-  | 'studioAgenda';
+export type Screen = 'auth' | 'register' | 'home' | 'booking' | 'studioAgenda';
 
-const SCREENS: Screen[] = ['welcome', 'auth', 'register', 'home', 'booking', 'studioAgenda'];
+const SCREENS: Screen[] = ['auth', 'register', 'home', 'booking', 'studioAgenda'];
 
 const initialProfile: UserProfile = {
   userId: '',
@@ -43,30 +38,34 @@ const initialProfile: UserProfile = {
   bandName: null,
   bandIds: [],
   ownedBandId: null,
+  ownedBandName: null,
+  ownedInviteToken: null,
   studioName: null,
   ownerStudioId: null,
 };
 
 function normalizeScreen(raw: string): Screen {
+  if (raw === 'welcome') return 'auth';
   return SCREENS.includes(raw as Screen) ? (raw as Screen) : 'auth';
+}
+
+function ownerStudioStateForProfile(profile: UserProfile): OwnerStudioState {
+  if (!profile.ownerStudioId) return emptyOwnerStudioState();
+  const rooms = defaultOwnerRooms(profile.ownerStudioId);
+  return {
+    pricePerHour: 90,
+    logoUri: DEMO_OWNER_LOGO_URI,
+    rooms,
+    blockedRangesByRoomDate: makeDemoBlockedRanges(rooms),
+    bookings: makeDemoBookings(profile.ownerStudioId, rooms),
+  };
 }
 
 function applyOwnerStudioForProfile(
   profile: UserProfile,
   setOwnerStudio: (o: OwnerStudioState | ((p: OwnerStudioState) => OwnerStudioState)) => void,
 ) {
-  if (profile.ownerStudioId) {
-    const rooms = defaultOwnerRooms(profile.ownerStudioId);
-    setOwnerStudio({
-      pricePerHour: 90,
-      logoUri: DEMO_OWNER_LOGO_URI,
-      rooms,
-      blockedRangesByRoomDate: makeDemoBlockedRanges(rooms),
-      bookings: makeDemoBookings(profile.ownerStudioId, rooms),
-    });
-  } else {
-    setOwnerStudio(emptyOwnerStudioState());
-  }
+  setOwnerStudio(ownerStudioStateForProfile(profile));
 }
 
 function readJoinTokenFromUrl(href: string): string | null {
@@ -120,9 +119,18 @@ export function AppNavigator() {
             saved?.profile.userId === remoteProfile.userId ? normalizeScreen(saved.screen) : 'home';
           setScreen(screenToUse);
         } else if (!cancelled && saved) {
-          setProfile(saved.profile);
-          setOwnerStudio(saved.ownerStudio);
-          setScreen(normalizeScreen(saved.screen));
+          /** Com Supabase, só entramos “logados” se existir sessão JWT; senão o JSON local ficava a abrir o painel à toa. */
+          if (isSupabaseConfigured()) {
+            setProfile(initialProfile);
+            setOwnerStudio(emptyOwnerStudioState());
+            setScreen('auth');
+          } else {
+            setProfile(saved.profile);
+            setOwnerStudio(saved.ownerStudio);
+            setScreen(normalizeScreen(saved.screen));
+          }
+        } else if (!cancelled) {
+          setScreen('auth');
         }
       } finally {
         if (!cancelled) {
@@ -136,6 +144,77 @@ export function AppNavigator() {
     };
   }, []);
 
+  /** Após OAuth na web, o Supabase pode atualizar a sessão sem recarregar o ecrã de login. */
+  useEffect(() => {
+    if (!hydrated || !isSupabaseConfigured()) return;
+    const sb = getSupabase();
+    const {
+      data: { subscription },
+    } = sb.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'TOKEN_REFRESHED') return;
+      if ((event !== 'SIGNED_IN' && event !== 'INITIAL_SESSION') || !session?.user) return;
+      const p = await buildPersistedProfileForUser(session.user);
+      if (!p) return;
+      setProfile(p);
+      applyOwnerStudioForProfile(p, setOwnerStudio);
+      setScreen((prev) => (prev === 'auth' || prev === 'register' ? 'home' : prev));
+    });
+    return () => subscription.unsubscribe();
+  }, [hydrated]);
+
+  /**
+   * Web: após o Google devolver tokens no URL, a sessão pode ficar pronta uns ms depois da hidratação.
+   * Isto evita ficar preso no ecrã de login até “entrar” de novo.
+   */
+  useEffect(() => {
+    if (!hydrated || !isSupabaseConfigured()) return;
+    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+
+    const hasOAuthFragment =
+      window.location.hash.includes('access_token') ||
+      window.location.hash.includes('refresh_token') ||
+      window.location.hash.includes('code=') ||
+      window.location.search.includes('code=');
+
+    const finishOAuthSession = async () => {
+      const sb = getSupabase();
+      const {
+        data: { session },
+      } = await sb.auth.getSession();
+      if (!session?.user) return;
+      const p = await buildPersistedProfileForUser(session.user);
+      if (!p) return;
+      setProfile(p);
+      applyOwnerStudioForProfile(p, setOwnerStudio);
+      setScreen((prev) => (prev === 'auth' || prev === 'register' ? 'home' : prev));
+      if (hasOAuthFragment) {
+        const path = window.location.pathname || '/';
+        window.history.replaceState({}, '', path);
+      }
+    };
+
+    void finishOAuthSession();
+
+    if (!hasOAuthFragment) return;
+
+    const id = window.setInterval(() => void finishOAuthSession(), 150);
+    const stop = window.setTimeout(() => window.clearInterval(id), 4000);
+    return () => {
+      window.clearInterval(id);
+      window.clearTimeout(stop);
+    };
+  }, [hydrated]);
+
+  /** Áreas autenticadas: sem sessão volta ao login. */
+  useEffect(() => {
+    if (!hydrated) return;
+    const loggedIn = Boolean(profile.userId);
+    const gated: Screen[] = ['home', 'booking', 'studioAgenda'];
+    if (!loggedIn && gated.includes(screen)) {
+      setScreen('auth');
+    }
+  }, [hydrated, profile.userId, screen]);
+
   useEffect(() => {
     if (!hydrated || skipSaveRef.current) return;
     void savePersistedSession({ profile, ownerStudio, screen });
@@ -144,7 +223,6 @@ export function AppNavigator() {
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof document === 'undefined') return;
     const titles: Record<Screen, string> = {
-      welcome: 'Início',
       auth: 'Entrar',
       register: 'Cadastro',
       home: 'Painel',
@@ -169,21 +247,27 @@ export function AppNavigator() {
   }, [stripJoinFromWebUrl]);
 
   const handleLogin = useCallback((next: UserProfile) => {
+    const studio = ownerStudioStateForProfile(next);
     setProfile(next);
-    applyOwnerStudioForProfile(next, setOwnerStudio);
+    setOwnerStudio(studio);
     setScreen('home');
+    void savePersistedSession({ profile: next, ownerStudio: studio, screen: 'home' });
   }, []);
 
   const handleRegister = useCallback((next: UserProfile) => {
+    const studio = ownerStudioStateForProfile(next);
     setProfile(next);
-    applyOwnerStudioForProfile(next, setOwnerStudio);
+    setOwnerStudio(studio);
     setScreen('home');
+    void savePersistedSession({ profile: next, ownerStudio: studio, screen: 'home' });
   }, []);
 
   const handleProfileUpdate = useCallback((next: UserProfile) => {
+    const studio = ownerStudioStateForProfile(next);
     setProfile(next);
-    applyOwnerStudioForProfile(next, setOwnerStudio);
-  }, []);
+    setOwnerStudio(studio);
+    void savePersistedSession({ profile: next, ownerStudio: studio, screen });
+  }, [screen]);
 
   const handleLogout = useCallback(() => {
     setProfile(initialProfile);
@@ -202,18 +286,10 @@ export function AppNavigator() {
   }
 
   switch (screen) {
-    case 'welcome':
-      return (
-        <WelcomeScreen
-          onLogin={go('auth')}
-          onRegister={go('register')}
-          onBookDemo={go('booking')}
-        />
-      );
     case 'auth':
-      return <AuthScreen onBack={go('welcome')} onSuccess={handleLogin} />;
+      return <AuthScreen onGoRegister={go('register')} onSuccess={handleLogin} />;
     case 'register':
-      return <RegisterScreen onBack={go('welcome')} onComplete={handleRegister} />;
+      return <RegisterScreen onBack={go('auth')} onComplete={handleRegister} />;
     case 'home':
       return (
         <HomeScreen
@@ -231,6 +307,7 @@ export function AppNavigator() {
         <StudioAgendaScreen
           profile={profile}
           onBack={go('home')}
+          onLogout={handleLogout}
           ownerStudio={ownerStudio}
           setOwnerStudio={setOwnerStudio}
         />
@@ -240,7 +317,8 @@ export function AppNavigator() {
         <BookingScreen
           profile={profile}
           ownerStudio={ownerStudio}
-          onBack={profile.email ? go('home') : go('welcome')}
+          onBack={profile.email ? go('home') : go('auth')}
+          onLogout={handleLogout}
         />
       );
     default:

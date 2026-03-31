@@ -16,6 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import type { UserProfile } from '../navigation/AppNavigator';
 import { registerAccount } from '../registry/localRegistry';
+import { isSupabaseConfigured } from '../lib/supabase/config';
 
 type Props = {
   onBack: () => void;
@@ -109,7 +110,7 @@ export function RegisterScreen({ onBack, onComplete }: Props) {
         showsVerticalScrollIndicator={false}
       >
         <Pressable onPress={onBack} style={({ pressed }) => [styles.back, pressed && styles.pressed]} accessibilityRole="button">
-          <Text style={styles.backText}>← Voltar</Text>
+          <Text style={styles.backText}>← Já tenho conta — entrar</Text>
         </Pressable>
 
         <Text style={styles.title}>Criar conta</Text>
@@ -209,7 +210,11 @@ export function RegisterScreen({ onBack, onComplete }: Props) {
             autoCapitalize="none"
           />
 
-          <Text style={styles.hint}>Os dados ficam só neste dispositivo/navegador (demo local).</Text>
+          <Text style={styles.hint}>
+            {isSupabaseConfigured()
+              ? 'Conta e dados ligados ao Supabase (nuvem).'
+              : 'Os dados ficam só neste dispositivo/navegador (modo local).'}
+          </Text>
 
           <Pressable
             style={({ pressed }) => [styles.primary, !canSubmit && styles.primaryOff, pressed && canSubmit && styles.pressed]}

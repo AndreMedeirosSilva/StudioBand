@@ -18,6 +18,9 @@ import { COLORS } from '../theme';
 import { WEB_AUTH_SPLIT_MIN_WIDTH } from '../layout/web';
 import { loginWithPassword } from '../registry/localRegistry';
 import type { UserProfile } from '../storage/persistSession';
+import { isSupabaseConfigured } from '../lib/supabase/config';
+import { signInWithGoogle } from '../lib/supabase/googleAuth';
+import { GOOGLE_G_LOGO_URI } from '../assets/googleBrand';
 
 /** Servido pelo Expo a partir de `public/login-hero.jpg` (ServeStaticMiddleware). */
 const HERO_PUBLIC_PATH = '/login-hero.jpg';
@@ -52,17 +55,19 @@ function HeroImageWeb() {
 }
 
 type Props = {
-  onBack: () => void;
+  onGoRegister: () => void;
   onSuccess: (profile: UserProfile) => void | Promise<void>;
 };
 
-export function AuthScreen({ onBack, onSuccess }: Props) {
+export function AuthScreen({ onGoRegister, onSuccess }: Props) {
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [secure, setSecure] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const showGoogle = isSupabaseConfigured();
 
   const horizontalPad = Math.min(28, Math.max(18, width * 0.06));
   const heroHeight = Math.min(Math.max(height * 0.36, 240), width >= 900 ? 320 : 380);
@@ -91,6 +96,26 @@ export function AuthScreen({ onBack, onSuccess }: Props) {
     }
   };
 
+  const onGoogle = async () => {
+    setGoogleBusy(true);
+    try {
+      const r = await signInWithGoogle();
+      if (r.kind === 'error') {
+        Alert.alert('Google', r.message);
+        return;
+      }
+      if (r.kind === 'ok') {
+        await Promise.resolve(onSuccess(r.profile));
+        return;
+      }
+      /* kind === 'redirect': navegador web a sair para o Google */
+    } finally {
+      if (Platform.OS !== 'web') {
+        setGoogleBusy(false);
+      }
+    }
+  };
+
   const heroVisual = (
     <>
       {Platform.OS === 'web' ? (
@@ -104,16 +129,7 @@ export function AuthScreen({ onBack, onSuccess }: Props) {
         />
       )}
       <View style={styles.heroScrim} pointerEvents="none" />
-      <View style={[styles.heroTop, { paddingTop: insets.top + 8, paddingHorizontal: horizontalPad }]}>
-        <Pressable
-          onPress={onBack}
-          style={({ pressed }) => [styles.backPill, pressed && styles.pressed]}
-          accessibilityRole="button"
-          accessibilityLabel="Voltar"
-        >
-          <Text style={styles.backPillText}>← Voltar</Text>
-        </Pressable>
-      </View>
+      <View style={[styles.heroTop, { paddingTop: insets.top + 8, paddingHorizontal: horizontalPad }]} />
       <View style={[styles.heroBottom, { paddingHorizontal: horizontalPad, paddingBottom: 28 }]}>
         <Text style={styles.kicker}>ESTUDIO BANDA</Text>
         <Text style={styles.heroTitle}>Bem-vindo de volta</Text>
@@ -127,10 +143,47 @@ export function AuthScreen({ onBack, onSuccess }: Props) {
       {!webAuthSplit ? <View style={styles.sheetHandle} importantForAccessibility="no" /> : null}
       <Text style={styles.sheetTitle}>Entrar</Text>
       <Text style={styles.sheetSub}>
-        {Platform.OS === 'web'
-          ? 'Sua sessão fica neste navegador (demo local). Use o mesmo e-mail e senha quando voltar por este site.'
-          : 'Use seu e-mail e senha para continuar.'}
+        {showGoogle
+          ? 'Entre com Google ou com e-mail e senha. Novo utilizador? Crie conta em seguida.'
+          : Platform.OS === 'web'
+            ? 'Use o mesmo e-mail e senha (modo local neste navegador). Configure Supabase para conta na nuvem e Google.'
+            : 'Use seu e-mail e senha para continuar.'}
       </Text>
+
+      {showGoogle ? (
+        <>
+          <Pressable
+            style={({ pressed }) => [
+              styles.googleBtn,
+              (googleBusy || pressed) && styles.pressed,
+              googleBusy && styles.primaryBusy,
+            ]}
+            onPress={() => void onGoogle()}
+            disabled={googleBusy || busy}
+            accessibilityRole="button"
+            accessibilityLabel="Continuar com Google"
+          >
+            {googleBusy ? (
+              <ActivityIndicator color={COLORS.text} />
+            ) : (
+              <View style={styles.googleBtnInner}>
+                <Image
+                  source={{ uri: GOOGLE_G_LOGO_URI }}
+                  style={styles.googleMark}
+                  contentFit="contain"
+                  accessibilityIgnoresInvertColors
+                />
+                <Text style={styles.googleBtnText}>Continuar com Google</Text>
+              </View>
+            )}
+          </Pressable>
+          <View style={styles.dividerRow}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerText}>ou com e-mail</Text>
+            <View style={styles.dividerLine} />
+          </View>
+        </>
+      ) : null}
 
       <View style={styles.card}>
         <Text style={styles.label}>E-mail</Text>
@@ -170,9 +223,13 @@ export function AuthScreen({ onBack, onSuccess }: Props) {
         </Pressable>
 
             <Pressable
-              style={({ pressed }) => [styles.primary, (busy || pressed) && styles.pressed, busy && styles.primaryBusy]}
+              style={({ pressed }) => [
+                styles.primary,
+                (busy || pressed) && styles.pressed,
+                busy && styles.primaryBusy,
+              ]}
               onPress={() => void submit()}
-              disabled={busy}
+              disabled={busy || googleBusy}
               accessibilityRole="button"
               accessibilityState={{ busy }}
             >
@@ -183,6 +240,17 @@ export function AuthScreen({ onBack, onSuccess }: Props) {
               )}
             </Pressable>
       </View>
+
+      <Pressable
+        onPress={onGoRegister}
+        style={({ pressed }) => [styles.registerLinkWrap, pressed && styles.pressed]}
+        accessibilityRole="button"
+        accessibilityLabel="Criar conta"
+      >
+        <Text style={styles.registerLink}>
+          É novo? <Text style={styles.registerLinkBold}>Criar conta</Text>
+        </Text>
+      </Pressable>
 
       <Text style={styles.credit}>Foto: estúdio (Unsplash)</Text>
     </>
@@ -312,20 +380,63 @@ const styles = StyleSheet.create({
   heroBottom: {
     zIndex: 2,
   },
-  backPill: {
-    alignSelf: 'flex-start',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 999,
-    backgroundColor: 'rgba(0,0,0,0.35)',
+  googleBtn: {
+    marginBottom: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.card,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.14)',
+    borderColor: COLORS.border,
+    paddingVertical: 15,
+    paddingHorizontal: 18,
   },
-  backPillText: {
-    color: '#fafafa',
-    fontSize: 15,
+  googleBtnInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  googleMark: {
+    width: 22,
+    height: 22,
+  },
+  googleBtnText: {
+    color: COLORS.text,
+    fontSize: 16,
     fontWeight: '700',
-    letterSpacing: 0.2,
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 18,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: COLORS.border,
+  },
+  dividerText: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  registerLinkWrap: {
+    marginTop: 20,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  registerLink: {
+    color: COLORS.muted,
+    fontSize: 15,
+    textAlign: 'center',
+  },
+  registerLinkBold: {
+    color: COLORS.accent,
+    fontWeight: '800',
   },
   kicker: {
     color: COLORS.accent,

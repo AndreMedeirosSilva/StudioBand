@@ -1,8 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { PersistedProfile } from '../storage/persistSession';
-import { buildInviteUrl } from '../lib/inviteLink';
+import { buildInviteUrl, parseInviteToken } from '../lib/inviteLink';
 import { isSupabaseConfigured } from '../lib/supabase/config';
 import {
+  createOwnedBandRemote,
   getInviteUrlForOwnedBandRemote,
   joinBandWithInviteRemote,
   listBandsDetailForUserRemote,
@@ -94,7 +95,7 @@ function findUserByEmail(r: LocalRegistryV1, email: string): LocalUser | undefin
 }
 
 export async function peekInviteBandName(token: string): Promise<string | null> {
-  const t = token.trim();
+  const t = parseInviteToken(token);
   if (!t) return null;
   if (isSupabaseConfigured()) {
     return peekInviteBandNameRemote(t);
@@ -134,6 +135,8 @@ function buildProfileFromRegistry(r: LocalRegistryV1, user: LocalUser): Persiste
     bandName,
     bandIds,
     ownedBandId,
+    ownedBandName: owned?.name ?? null,
+    ownedInviteToken: owned?.inviteToken ?? null,
     studioName: user.studioName ?? null,
     ownerStudioId: user.ownerStudioId ?? null,
   };
@@ -164,9 +167,9 @@ export type JoinBandResult =
 
 /** Só depois de logado: associa o utilizador à banda pelo token do convite (dados locais). */
 export async function joinBandWithInvite(userId: string, inviteToken: string): Promise<JoinBandResult> {
-  const t = inviteToken.trim();
+  const t = parseInviteToken(inviteToken);
   if (!t) {
-    return { ok: false, message: 'Cole o código do convite (ex.: inv_…).' };
+    return { ok: false, message: 'Cole o código do convite (ex.: inv_…) ou o link com ?join=….' };
   }
   if (isSupabaseConfigured()) {
     return joinBandWithInviteRemote(userId, t);
@@ -185,6 +188,42 @@ export async function joinBandWithInvite(userId: string, inviteToken: string): P
     return { ok: false, message: 'Você já faz parte desta banda.' };
   }
   r.memberships.push({ userId, bandId: band.id, role: 'member' });
+  await saveRegistry(r);
+  return { ok: true, profile: buildProfileFromRegistry(r, user) };
+}
+
+export async function createOwnedBand(userId: string, bandName: string): Promise<JoinBandResult> {
+  const name = bandName.trim();
+  if (!name) {
+    return { ok: false, message: 'Informe o nome da banda.' };
+  }
+  if (isSupabaseConfigured()) {
+    const res = await createOwnedBandRemote(name);
+    if (!res.ok) return { ok: false, message: res.message };
+    return { ok: true, profile: res.profile };
+  }
+  const r = await loadRegistry();
+  const user = r.users.find((u) => u.id === userId);
+  if (!user) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  if (r.bands.some((b) => b.ownerUserId === userId)) {
+    return {
+      ok: false,
+      message: 'Você já criou uma banda como administrador. Convide membros pelo link ou entre em outras bandas com código.',
+    };
+  }
+  const now = new Date().toISOString();
+  const bandId = `bnd_${randomSuffix()}`;
+  const inviteToken = newInviteToken();
+  r.bands.push({
+    id: bandId,
+    name,
+    ownerUserId: userId,
+    inviteToken,
+    createdAt: now,
+  });
+  r.memberships.push({ userId, bandId, role: 'owner' });
   await saveRegistry(r);
   return { ok: true, profile: buildProfileFromRegistry(r, user) };
 }
@@ -240,6 +279,8 @@ export async function registerAccount(input: RegisterInput): Promise<RegisterRes
   let bandIds: string[] = [];
   let bandName: string | null = null;
   let ownedBandId: string | null = null;
+  let ownedBandName: string | null = null;
+  let ownedInviteToken: string | null = null;
 
   if (input.isBand && input.bandName.trim()) {
     const bandId = `bnd_${randomSuffix()}`;
@@ -256,6 +297,8 @@ export async function registerAccount(input: RegisterInput): Promise<RegisterRes
     bandIds = [bandId];
     bandName = band.name;
     ownedBandId = bandId;
+    ownedBandName = band.name;
+    ownedInviteToken = inviteToken;
   }
 
   const profile: PersistedProfile = {
@@ -265,6 +308,8 @@ export async function registerAccount(input: RegisterInput): Promise<RegisterRes
     bandName,
     bandIds,
     ownedBandId,
+    ownedBandName,
+    ownedInviteToken,
     studioName,
     ownerStudioId,
   };

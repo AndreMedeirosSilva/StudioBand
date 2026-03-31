@@ -36,11 +36,19 @@ npx expo start
 
 ## Base de dados (Supabase)
 
-A migração SQL está em `supabase/migrations/20260329120000_estudio_banda.sql` (tabelas `profiles`, `bands`, `band_memberships`, `studios`, RLS e funções de convite).
+As migrações SQL estão em `supabase/migrations/`: primeiro `20260329120000_estudio_banda.sql` (tabelas, RLS, convites), depois **`20260329140000_create_owned_band_rpc.sql`** (função `create_owned_band` — necessária para **criar banda** no app e no cadastro com banda).
 
-Podes aplicá-la no **SQL Editor** do dashboard ou com a CLI / MCP do Supabase.
+Aplica-as por ordem no **SQL Editor** do dashboard ou com a CLI / MCP do Supabase.
 
 Em desenvolvimento, em **Authentication → Providers → Email**, desativar confirmação de e-mail evita sessão vazia logo após o registo.
+
+### Login com Google
+
+1. **Google Cloud Console**: criar credenciais OAuth (tipo *Web* e, para mobile, os ecrãs de consentimento adequados).  
+2. **Supabase → Authentication → Providers → Google**: ativar e colar *Client ID* e *Client Secret*.  
+3. **Supabase → Authentication → URL Configuration → Redirect URLs**: adicionar `estudiobanda://auth/callback` e o URL da app web (ex.: `http://localhost:8081/` em desenvolvimento).
+
+O esquema de URL `estudiobanda` está definido em `app.json` (`scheme`).
 
 ## Scripts
 
