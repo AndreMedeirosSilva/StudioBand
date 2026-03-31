@@ -18,6 +18,7 @@ import { BookingFlowProgress } from '../components/BookingFlowProgress';
 import { RoomPhotosStrip } from '../components/StudioMedia';
 import { DayTimelineInteractive } from '../components/DayTimelineInteractive';
 import { COLORS } from '../theme';
+import { LoggedInUserBar } from '../components/LoggedInUserBar';
 import type { UserProfile } from '../navigation/AppNavigator';
 import {
   listStudiosForBooking,
@@ -38,6 +39,7 @@ type Props = {
   profile: UserProfile;
   ownerStudio: OwnerStudioState;
   onBack: () => void;
+  onLogout: () => void;
 };
 
 function formatDayLong(d: Date): string {
@@ -50,7 +52,7 @@ const DEFAULT_END = 10 * 60 + 30;
 
 type BookingStep = 'studio' | 'rooms' | 'schedule';
 
-export function BookingScreen({ profile, ownerStudio, onBack }: Props) {
+export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const pad = Math.min(24, Math.max(14, width * 0.05));
@@ -181,13 +183,22 @@ export function BookingScreen({ profile, ownerStudio, onBack }: Props) {
         : 'Calendário e horário';
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
-      <View style={[styles.topBar, { paddingHorizontal: pad }]}>
+    <View style={styles.root}>
+      <LoggedInUserBar
+        profile={profile}
+        onLogout={onLogout}
+        placement="overlay"
+        top={insets.top + 8}
+        right={pad}
+      />
+      <View style={{ paddingTop: insets.top + 52, paddingHorizontal: pad }}>
+      <View style={styles.topBar}>
         <Pressable onPress={goBackInFlow} style={({ pressed }) => [styles.back, pressed && styles.pressed]} accessibilityRole="button">
           <Text style={styles.backText}>← Voltar</Text>
         </Pressable>
         <Text style={styles.topTitle}>{topTitle}</Text>
         <View style={{ width: 72 }} />
+      </View>
       </View>
 
       <View style={{ paddingHorizontal: pad }}>

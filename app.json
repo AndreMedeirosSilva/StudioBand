@@ -2,6 +2,7 @@
   "expo": {
     "name": "Estudio Banda",
     "slug": "estudiobanda",
+    "scheme": "estudiobanda",
     "version": "1.0.0",
     "orientation": "default",
     "userInterfaceStyle": "automatic",

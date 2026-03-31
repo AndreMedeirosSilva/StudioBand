@@ -12,6 +12,10 @@ export type PersistedProfile = {
   bandIds: string[];
   /** Banda que este usuário criou (para exibir link de convite). */
   ownedBandId: string | null;
+  /** Nome da banda criada por este utilizador (dono). */
+  ownedBandName: string | null;
+  /** Token `inv_…` gerado na criação — persistido para convite e reconstruir o link. */
+  ownedInviteToken: string | null;
   studioName: string | null;
   ownerStudioId: string | null;
 };
@@ -31,18 +35,29 @@ function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === 'object' && x !== null && !Array.isArray(x);
 }
 
-function isPersistedProfile(x: unknown): x is PersistedProfile {
-  if (!isRecord(x)) return false;
-  return (
-    typeof x.userId === 'string' &&
-    typeof x.email === 'string' &&
-    'displayName' in x &&
-    'bandName' in x &&
-    Array.isArray(x.bandIds) &&
-    'ownedBandId' in x &&
-    'studioName' in x &&
-    'ownerStudioId' in x
-  );
+function coercePersistedProfile(x: unknown): PersistedProfile | null {
+  if (!isRecord(x)) return null;
+  if (typeof x.userId !== 'string' || typeof x.email !== 'string') return null;
+  if (!('displayName' in x) || !('bandName' in x) || !Array.isArray(x.bandIds)) return null;
+  if (!x.bandIds.every((id): id is string => typeof id === 'string')) return null;
+  if (!('ownedBandId' in x) || !('studioName' in x) || !('ownerStudioId' in x)) return null;
+  const ownedBandId = x.ownedBandId === null || typeof x.ownedBandId === 'string' ? x.ownedBandId : null;
+  const displayName = x.displayName === null || typeof x.displayName === 'string' ? x.displayName : null;
+  const bandName = x.bandName === null || typeof x.bandName === 'string' ? x.bandName : null;
+  const studioName = x.studioName === null || typeof x.studioName === 'string' ? x.studioName : null;
+  const ownerStudioId = x.ownerStudioId === null || typeof x.ownerStudioId === 'string' ? x.ownerStudioId : null;
+  return {
+    userId: x.userId,
+    email: x.email,
+    displayName,
+    bandName,
+    bandIds: x.bandIds,
+    ownedBandId,
+    ownedBandName: typeof x.ownedBandName === 'string' ? x.ownedBandName : null,
+    ownedInviteToken: typeof x.ownedInviteToken === 'string' ? x.ownedInviteToken : null,
+    studioName,
+    ownerStudioId,
+  };
 }
 
 function isOwnerStudioState(x: unknown): x is OwnerStudioState {
@@ -63,11 +78,12 @@ function parseSession(raw: string | null): PersistedSessionV2 | null {
     if (!isRecord(data)) return null;
     if (data.v === 1) return null;
     if (data.v !== 2) return null;
-    if (!isPersistedProfile(data.profile) || !isOwnerStudioState(data.ownerStudio)) return null;
+    const profile = coercePersistedProfile(data.profile);
+    if (!profile || !isOwnerStudioState(data.ownerStudio)) return null;
     if (typeof data.screen !== 'string') return null;
     return {
       v: 2,
-      profile: data.profile,
+      profile,
       ownerStudio: data.ownerStudio,
       screen: data.screen,
     };

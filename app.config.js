@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const appJson = require('./app.json');
 
 /** Expo só embute `EXPO_PUBLIC_*` no bundle; `NEXT_PUBLIC_*` entra via `extra`. */

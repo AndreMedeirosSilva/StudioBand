@@ -17,6 +17,7 @@ import { DayTimeline } from '../components/DayTimeline';
 import { TimeChipsRow } from '../components/TimeChipsRow';
 import { StudioLogoBanner, RoomPhotosStrip } from '../components/StudioMedia';
 import { COLORS } from '../theme';
+import { LoggedInUserBar } from '../components/LoggedInUserBar';
 import type { UserProfile } from '../navigation/AppNavigator';
 import {
   getTimelineSegmentsForDay,
@@ -34,11 +35,12 @@ import type { MinuteRange } from '../lib/schedule';
 type Props = {
   profile: UserProfile;
   onBack: () => void;
+  onLogout: () => void;
   ownerStudio: OwnerStudioState;
   setOwnerStudio: Dispatch<SetStateAction<OwnerStudioState>>;
 };
 
-export function StudioAgendaScreen({ profile, onBack, ownerStudio, setOwnerStudio }: Props) {
+export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, setOwnerStudio }: Props) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const pad = Math.min(24, Math.max(14, width * 0.05));
@@ -176,13 +178,22 @@ export function StudioAgendaScreen({ profile, onBack, ownerStudio, setOwnerStudi
   const priceHint = Number.parseFloat(priceDraft.replace(',', '.')) || 0;
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
-      <View style={[styles.topBar, { paddingHorizontal: pad }]}>
+    <View style={styles.root}>
+      <LoggedInUserBar
+        profile={profile}
+        onLogout={onLogout}
+        placement="overlay"
+        top={insets.top + 8}
+        right={pad}
+      />
+      <View style={{ paddingTop: insets.top + 52, paddingHorizontal: pad }}>
+      <View style={styles.topBar}>
         <Pressable onPress={onBack} style={({ pressed }) => [styles.back, pressed && styles.pressed]} accessibilityRole="button">
           <Text style={styles.backText}>← Voltar</Text>
         </Pressable>
         <Text style={styles.topTitle}>Agenda do estúdio</Text>
         <View style={{ width: 72 }} />
+      </View>
       </View>
 
       <ScrollView
