@@ -35,6 +35,8 @@ Configuração sensível (URLs e chaves de serviços) fica em ficheiros locais n
 
 Código e histórico: [github.com/AndreMedeirosSilva/StudioBand](https://github.com/AndreMedeirosSilva/StudioBand)
 
+Ramo principal: **`master`**. Alterações podem ser propostas via *pull request* para `master`.
+
 ## Licença
 
 Uso privado do autor, salvo indicação em contrário nos ficheiros do repositório.
