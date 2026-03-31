@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Estudio Banda",
+    "slug": "estudiobanda",
+    "scheme": "estudiobanda",
+    "version": "1.0.0",
+    "orientation": "default",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.estudiobanda.app"
+    },
+    "android": {
+      "package": "com.estudiobanda.app"
+    },
+    "assetBundlePatterns": ["src/assets/**/*", "assets/**/*"],
+    "web": {
+      "bundler": "metro",
+      "name": "Estudio Banda",
+      "shortName": "Estudio Banda",
+      "lang": "pt-BR",
+      "description": "Marque ensaios e gerencie estúdios — bandas, músicos e donos de sala.",
+      "themeColor": "#0c0a12",
+      "backgroundColor": "#0c0a12"
+    },
+    "plugins": [
+      "expo-asset",
+      "expo-font"
+    ]
+  }
+}
