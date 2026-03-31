@@ -6,22 +6,24 @@ function getExtra(): SupabaseExtra {
   return (Constants.expoConfig?.extra ?? {}) as SupabaseExtra;
 }
 
+/** URL: inline EXPO_PUBLIC_* (bundle web), depois `extra` do app.config no build, por último NEXT_PUBLIC_* (Node). */
 function resolveUrl(): string | undefined {
+  const fromInline = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim();
+  if (fromInline) return fromInline;
   const fromExtra = getExtra().supabaseUrl?.trim();
   if (fromExtra) return fromExtra;
-  return (
-    process.env.EXPO_PUBLIC_SUPABASE_URL?.trim() ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()
-  );
+  return process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
 }
 
 /** Chave anon (JWT) ou publishable (`sb_publishable_…`). */
 function resolveKey(): string | undefined {
+  const fromInline =
+    process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
+    process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY?.trim();
+  if (fromInline) return fromInline;
   const fromExtra = getExtra().supabaseKey?.trim();
   if (fromExtra) return fromExtra;
   return (
-    process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
-    process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY?.trim() ||
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY?.trim() ||
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim()
   );
