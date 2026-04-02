@@ -49,6 +49,16 @@ function getOAuthRedirectUrl(): string {
   });
 }
 
+function getWebOAuthRedirectUrl(): string | null {
+  const envRedirect =
+    process.env.EXPO_PUBLIC_SUPABASE_AUTH_REDIRECT_URL?.trim() ||
+    process.env.NEXT_PUBLIC_SUPABASE_AUTH_REDIRECT_URL?.trim() ||
+    '';
+  if (envRedirect) return envRedirect.replace(/\/$/, '');
+  if (typeof window === 'undefined') return null;
+  return `${window.location.origin}/`;
+}
+
 /**
  * Login com Google via Supabase. Na web redireciona a página inteira (`kind: 'redirect'`).
  * Em iOS/Android abre o browser e conclui com PKCE ou tokens no URL de retorno.
@@ -60,9 +70,7 @@ export async function signInWithGoogle(): Promise<GoogleSignInResult> {
 
   const sb = getSupabase();
   const redirectTo =
-    Platform.OS === 'web' && typeof window !== 'undefined'
-      ? `${window.location.origin}${window.location.pathname || '/'}`
-      : getOAuthRedirectUrl();
+    Platform.OS === 'web' ? getWebOAuthRedirectUrl() ?? getOAuthRedirectUrl() : getOAuthRedirectUrl();
 
   const { data, error } = await sb.auth.signInWithOAuth({
     provider: 'google',
@@ -112,7 +120,7 @@ export async function signInWithGoogle(): Promise<GoogleSignInResult> {
     return {
       kind: 'error',
       message:
-        'Resposta do login sem código/tokens. No Supabase: Authentication → URL Configuration → adicione o redirect (ex.: estudiobanda://auth/callback).',
+        `Resposta do login sem código/tokens. No Supabase: Authentication → URL Configuration → adicione o redirect (${redirectTo}).`,
     };
   }
 

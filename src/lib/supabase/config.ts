@@ -33,6 +33,11 @@ export function isSupabaseConfigured(): boolean {
   return Boolean(resolveUrl() && resolveKey());
 }
 
+export function isInsecureLocalAuthAllowed(): boolean {
+  const raw = process.env.EXPO_PUBLIC_ALLOW_INSECURE_LOCAL_AUTH?.trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+}
+
 export function getSupabaseUrl(): string {
   const url = resolveUrl();
   if (!url) {

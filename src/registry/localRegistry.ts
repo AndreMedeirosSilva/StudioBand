@@ -1,7 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { PersistedProfile } from '../storage/persistSession';
 import { buildInviteUrl, parseInviteToken } from '../lib/inviteLink';
-import { isSupabaseConfigured } from '../lib/supabase/config';
+import { isInsecureLocalAuthAllowed, isSupabaseConfigured } from '../lib/supabase/config';
+import { getPasswordPolicyError, isValidEmail, normalizeEmail } from '../lib/auth/credentialsPolicy';
 import {
   createOwnedBandRemote,
   getInviteUrlForOwnedBandRemote,
@@ -74,10 +75,6 @@ export async function saveRegistry(r: LocalRegistryV1): Promise<void> {
   await AsyncStorage.setItem(REGISTRY_KEY, JSON.stringify(r));
 }
 
-function normEmail(e: string): string {
-  return e.trim().toLowerCase();
-}
-
 function randomSuffix(): string {
   return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -90,7 +87,7 @@ function newInviteToken(): string {
 }
 
 function findUserByEmail(r: LocalRegistryV1, email: string): LocalUser | undefined {
-  const n = normEmail(email);
+  const n = normalizeEmail(email);
   return r.users.find((u) => u.email === n);
 }
 
@@ -149,6 +146,13 @@ export type LoginResult =
 export async function loginWithPassword(email: string, password: string): Promise<LoginResult> {
   if (isSupabaseConfigured()) {
     return loginWithPasswordRemote(email, password);
+  }
+  if (!isInsecureLocalAuthAllowed()) {
+    return {
+      ok: false,
+      message:
+        'Login local está desativado por segurança. Configure Supabase (.env) ou ative EXPO_PUBLIC_ALLOW_INSECURE_LOCAL_AUTH apenas para desenvolvimento.',
+    };
   }
   const r = await loadRegistry();
   const u = findUserByEmail(r, email.trim());
@@ -236,12 +240,20 @@ export async function registerAccount(input: RegisterInput): Promise<RegisterRes
   if (isSupabaseConfigured()) {
     return registerAccountRemote(input);
   }
-  const email = normEmail(input.email);
-  if (!email || !email.includes('@')) {
+  if (!isInsecureLocalAuthAllowed()) {
+    return {
+      ok: false,
+      message:
+        'Cadastro local está desativado por segurança. Configure Supabase (.env) ou ative EXPO_PUBLIC_ALLOW_INSECURE_LOCAL_AUTH apenas para desenvolvimento.',
+    };
+  }
+  const email = normalizeEmail(input.email);
+  if (!isValidEmail(email)) {
     return { ok: false, message: 'Informe um e-mail válido.' };
   }
-  if (input.password.length < 6) {
-    return { ok: false, message: 'A senha deve ter pelo menos 6 caracteres.' };
+  const passwordPolicyError = getPasswordPolicyError(input.password);
+  if (passwordPolicyError) {
+    return { ok: false, message: passwordPolicyError };
   }
 
   const r = await loadRegistry();
