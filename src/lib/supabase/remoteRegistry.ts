@@ -1,6 +1,7 @@
 import type { User } from '@supabase/supabase-js';
 import type { PersistedProfile } from '../../storage/persistSession';
 import type { RegisterInput } from '../../registry/registerTypes';
+import { getPasswordPolicyError, isValidEmail, normalizeEmail } from '../auth/credentialsPolicy';
 import { buildInviteUrl, parseInviteToken } from '../inviteLink';
 import { getSupabase } from './client';
 import { isSupabaseConfigured } from './config';
@@ -69,6 +70,41 @@ function mapOwnedBandRpcError(err: { message?: string; code?: string } | null): 
     return mapDbError(raw);
   }
   return raw.trim() || mapDbError(raw);
+}
+
+function isInviteTokenConflictError(err: { message?: string; code?: string } | null): boolean {
+  if (!err) return false;
+  const m = (err.message ?? '').toLowerCase();
+  return (
+    err.code === '23505' ||
+    (m.includes('unique') && m.includes('invite_token')) ||
+    m.includes('duplicate key value') ||
+    m.includes('invite_token')
+  );
+}
+
+async function createOwnedBandWithRetry(
+  sb: ReturnType<typeof getSupabase>,
+  bandName: string,
+): Promise<{ ok: true; bandId: string; inviteToken: string } | { ok: false; error: { message?: string; code?: string } | null }> {
+  const MAX_TRIES = 6;
+  for (let i = 0; i < MAX_TRIES; i++) {
+    const token = newInviteToken();
+    const { data: bandIdRaw, error } = await sb.rpc('create_owned_band', {
+      p_name: bandName,
+      p_invite_token: token,
+    });
+    if (!error && bandIdRaw != null) {
+      return { ok: true, bandId: String(bandIdRaw), inviteToken: token };
+    }
+    if (!isInviteTokenConflictError(error)) {
+      return { ok: false, error };
+    }
+  }
+  return {
+    ok: false,
+    error: { message: 'Conflito repetido ao gerar código de convite. Tente novamente em alguns segundos.' },
+  };
 }
 
 async function resolveAuthUser(sb: ReturnType<typeof getSupabase>): Promise<User | null> {
@@ -192,7 +228,7 @@ export async function buildPersistedProfileForUser(user: User): Promise<Persiste
 }
 
 export async function loginWithPasswordRemote(email: string, password: string): Promise<RemoteLoginResult> {
-  const e = email.trim().toLowerCase();
+  const e = normalizeEmail(email);
   const sb = getSupabase();
   const { data, error } = await sb.auth.signInWithPassword({ email: e, password });
   if (error || !data.user) {
@@ -206,12 +242,13 @@ export async function loginWithPasswordRemote(email: string, password: string): 
 }
 
 export async function registerAccountRemote(input: RegisterInput): Promise<RemoteLoginResult> {
-  const email = input.email.trim().toLowerCase();
-  if (!email.includes('@')) {
+  const email = normalizeEmail(input.email);
+  if (!isValidEmail(email)) {
     return { ok: false, message: 'Informe um e-mail válido.' };
   }
-  if (input.password.length < 6) {
-    return { ok: false, message: 'A senha deve ter pelo menos 6 caracteres.' };
+  const passwordPolicyError = getPasswordPolicyError(input.password);
+  if (passwordPolicyError) {
+    return { ok: false, message: passwordPolicyError };
   }
   if (input.isBand && !input.bandName.trim()) {
     return { ok: false, message: 'Informe o nome da banda ou desmarque “Criar banda”.' };
@@ -271,22 +308,18 @@ export async function registerAccountRemote(input: RegisterInput): Promise<Remot
     | { bandId: string; bandName: string; inviteToken: string }
     | null = null;
   if (input.isBand && input.bandName.trim()) {
-    const token = newInviteToken();
     const trimmedBandName = input.bandName.trim();
-    const { data: bandIdRaw, error: rpcErr } = await sb.rpc('create_owned_band', {
-      p_name: trimmedBandName,
-      p_invite_token: token,
-    });
-    if (rpcErr || bandIdRaw == null) {
+    const ownedCreate = await createOwnedBandWithRetry(sb, trimmedBandName);
+    if (!ownedCreate.ok) {
       return {
         ok: false,
-        message: mapOwnedBandRpcError(rpcErr) || 'Não foi possível criar a banda.',
+        message: mapOwnedBandRpcError(ownedCreate.error) || 'Não foi possível criar a banda.',
       };
     }
     registeredOwned = {
-      bandId: String(bandIdRaw),
+      bandId: ownedCreate.bandId,
       bandName: trimmedBandName,
-      inviteToken: token,
+      inviteToken: ownedCreate.inviteToken,
     };
   }
 
@@ -323,15 +356,11 @@ export async function createOwnedBandRemote(bandName: string): Promise<RemoteLog
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
   }
 
-  const token = newInviteToken();
-  const { data: bandIdRaw, error: rpcErr } = await sb.rpc('create_owned_band', {
-    p_name: name,
-    p_invite_token: token,
-  });
-  if (rpcErr || bandIdRaw == null) {
+  const created = await createOwnedBandWithRetry(sb, name);
+  if (!created.ok) {
     return {
       ok: false,
-      message: mapOwnedBandRpcError(rpcErr) || 'Não foi possível criar a banda.',
+      message: mapOwnedBandRpcError(created.error) || 'Não foi possível criar a banda.',
     };
   }
 
@@ -339,14 +368,13 @@ export async function createOwnedBandRemote(bandName: string): Promise<RemoteLog
   if (!profile) {
     return { ok: false, message: 'Banda criada, mas falhou ao atualizar o perfil.' };
   }
-  const bandId = String(bandIdRaw);
   return {
     ok: true,
     profile: {
       ...profile,
-      ownedBandId: bandId,
+      ownedBandId: created.bandId,
       ownedBandName: name,
-      ownedInviteToken: token,
+      ownedInviteToken: created.inviteToken,
     },
   };
 }

@@ -21,6 +21,12 @@ import type { UserProfile } from '../storage/persistSession';
 import { isSupabaseConfigured } from '../lib/supabase/config';
 import { signInWithGoogle } from '../lib/supabase/googleAuth';
 import { GOOGLE_G_LOGO_URI } from '../assets/googleBrand';
+import { isValidEmail, normalizeEmail } from '../lib/auth/credentialsPolicy';
+import {
+  clearLoginRateLimit,
+  getLoginLockStatus,
+  registerFailedLoginAttempt,
+} from '../lib/auth/loginRateLimiter';
 
 /** Servido pelo Expo a partir de `public/login-hero.jpg` (ServeStaticMiddleware). */
 const HERO_PUBLIC_PATH = '/login-hero.jpg';
@@ -73,24 +79,50 @@ export function AuthScreen({ onGoRegister, onSuccess }: Props) {
   const heroHeight = Math.min(Math.max(height * 0.36, 240), width >= 900 ? 320 : 380);
   const webAuthSplit = Platform.OS === 'web' && width >= WEB_AUTH_SPLIT_MIN_WIDTH;
 
+  const shouldCountAsCredentialFailure = (message: string): boolean => {
+    const m = message.trim().toLowerCase();
+    return (
+      m.includes('senha incorreta') ||
+      m.includes('e-mail ou senha incorretos') ||
+      m.includes('e-mail não encontrado') ||
+      m.includes('invalid login credentials')
+    );
+  };
+
   const submit = async () => {
-    const e = email.trim().toLowerCase();
-    if (e.length < 3 || !e.includes('@')) {
+    const e = normalizeEmail(email);
+    if (!isValidEmail(e)) {
       Alert.alert('E-mail', 'Informe um e-mail válido.');
       return;
     }
-    if (password.length < 6) {
-      Alert.alert('Senha', 'A senha deve ter pelo menos 6 caracteres.');
+    if (password.length < 1) {
+      Alert.alert('Senha', 'Informe sua senha.');
+      return;
+    }
+    const lock = await getLoginLockStatus(e);
+    if (lock.locked) {
+      Alert.alert('Acesso temporariamente bloqueado', lock.message ?? 'Tente novamente em instantes.');
       return;
     }
     setBusy(true);
     try {
       const res = await loginWithPassword(e, password);
       if (!res.ok) {
+        if (shouldCountAsCredentialFailure(res.message)) {
+          const lockMsg = await registerFailedLoginAttempt(e);
+          if (lockMsg) {
+            Alert.alert('Acesso temporariamente bloqueado', lockMsg);
+            return;
+          }
+        }
         Alert.alert('Não foi possível entrar', res.message);
         return;
       }
+      await clearLoginRateLimit(e);
       await Promise.resolve(onSuccess(res.profile));
+    } catch (err) {
+      const m = err instanceof Error ? err.message : 'Erro inesperado. Tente de novo.';
+      Alert.alert('Erro', m);
     } finally {
       setBusy(false);
     }
@@ -109,6 +141,9 @@ export function AuthScreen({ onGoRegister, onSuccess }: Props) {
         return;
       }
       /* kind === 'redirect': navegador web a sair para o Google */
+    } catch (err) {
+      const m = err instanceof Error ? err.message : 'Erro inesperado com Google.';
+      Alert.alert('Google', m);
     } finally {
       if (Platform.OS !== 'web') {
         setGoogleBusy(false);
@@ -146,7 +181,7 @@ export function AuthScreen({ onGoRegister, onSuccess }: Props) {
         {showGoogle
           ? 'Entre com Google ou com e-mail e senha. Novo utilizador? Crie conta em seguida.'
           : Platform.OS === 'web'
-            ? 'Use o mesmo e-mail e senha (modo local neste navegador). Configure Supabase para conta na nuvem e Google.'
+            ? 'Entre com e-mail e senha. Para segurança, o login local fica desativado sem Supabase.'
             : 'Use seu e-mail e senha para continuar.'}
       </Text>
 

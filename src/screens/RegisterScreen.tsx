@@ -17,6 +17,7 @@ import { COLORS } from '../theme';
 import type { UserProfile } from '../navigation/AppNavigator';
 import { registerAccount } from '../registry/localRegistry';
 import { isSupabaseConfigured } from '../lib/supabase/config';
+import { getPasswordPolicyError, isValidEmail, MIN_PASSWORD_LENGTH } from '../lib/auth/credentialsPolicy';
 
 type Props = {
   onBack: () => void;
@@ -46,12 +47,13 @@ export function RegisterScreen({ onBack, onComplete }: Props) {
 
   const submit = async () => {
     const e = email.trim();
-    if (!e || !e.includes('@')) {
+    if (!isValidEmail(e)) {
       Alert.alert('E-mail', 'Informe um e-mail válido.');
       return;
     }
-    if (password.length < 6) {
-      Alert.alert('Senha', 'A senha deve ter pelo menos 6 caracteres.');
+    const passwordPolicyError = getPasswordPolicyError(password);
+    if (passwordPolicyError) {
+      Alert.alert('Senha', passwordPolicyError);
       return;
     }
     if (password !== passwordConfirm) {
@@ -90,7 +92,7 @@ export function RegisterScreen({ onBack, onComplete }: Props) {
 
   const canSubmit =
     email.trim().length > 0 &&
-    password.length >= 6 &&
+    password.length >= MIN_PASSWORD_LENGTH &&
     password === passwordConfirm &&
     (!isBand || bandName.trim().length > 0) &&
     (!isStudio || studioName.trim().length > 0);
@@ -191,7 +193,7 @@ export function RegisterScreen({ onBack, onComplete }: Props) {
           <Text style={[styles.label, styles.labelSpaced]}>Senha</Text>
           <TextInput
             style={styles.input}
-            placeholder="Mínimo 6 caracteres"
+            placeholder={`Mínimo ${MIN_PASSWORD_LENGTH} (com maiúscula e número)`}
             placeholderTextColor={COLORS.muted}
             value={password}
             onChangeText={setPassword}
@@ -213,7 +215,7 @@ export function RegisterScreen({ onBack, onComplete }: Props) {
           <Text style={styles.hint}>
             {isSupabaseConfigured()
               ? 'Conta e dados ligados ao Supabase (nuvem).'
-              : 'Os dados ficam só neste dispositivo/navegador (modo local).'}
+              : 'Cadastro local desativado por segurança. Configure Supabase no .env.'}
           </Text>
 
           <Pressable

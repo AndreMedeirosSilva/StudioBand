@@ -124,6 +124,7 @@ export function AppNavigator() {
             setProfile(initialProfile);
             setOwnerStudio(emptyOwnerStudioState());
             setScreen('auth');
+            void clearPersistedSession();
           } else {
             setProfile(saved.profile);
             setOwnerStudio(saved.ownerStudio);
@@ -152,12 +153,24 @@ export function AppNavigator() {
       data: { subscription },
     } = sb.auth.onAuthStateChange(async (event, session) => {
       if (event === 'TOKEN_REFRESHED') return;
-      if ((event !== 'SIGNED_IN' && event !== 'INITIAL_SESSION') || !session?.user) return;
-      const p = await buildPersistedProfileForUser(session.user);
-      if (!p) return;
-      setProfile(p);
-      applyOwnerStudioForProfile(p, setOwnerStudio);
-      setScreen((prev) => (prev === 'auth' || prev === 'register' ? 'home' : prev));
+      if (event === 'SIGNED_OUT' || !session?.user) {
+        if (event === 'SIGNED_OUT') {
+          setProfile(initialProfile);
+          setOwnerStudio(emptyOwnerStudioState());
+          setScreen('auth');
+        }
+        return;
+      }
+      if (event !== 'SIGNED_IN' && event !== 'INITIAL_SESSION') return;
+      try {
+        const p = await buildPersistedProfileForUser(session.user);
+        if (!p) return;
+        setProfile(p);
+        applyOwnerStudioForProfile(p, setOwnerStudio);
+        setScreen((prev) => (prev === 'auth' || prev === 'register' ? 'home' : prev));
+      } catch {
+        /* evita estado inconsistente se a rede falhar a meio */
+      }
     });
     return () => subscription.unsubscribe();
   }, [hydrated]);
@@ -317,7 +330,7 @@ export function AppNavigator() {
         <BookingScreen
           profile={profile}
           ownerStudio={ownerStudio}
-          onBack={profile.email ? go('home') : go('auth')}
+          onBack={profile.userId ? go('home') : go('auth')}
           onLogout={handleLogout}
         />
       );
