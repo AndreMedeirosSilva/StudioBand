@@ -5,12 +5,15 @@ import { isInsecureLocalAuthAllowed, isSupabaseConfigured } from '../lib/supabas
 import { getPasswordPolicyError, isValidEmail, normalizeEmail } from '../lib/auth/credentialsPolicy';
 import {
   createOwnedBandRemote,
+  deleteOwnedBandRemote,
   getInviteUrlForOwnedBandRemote,
   joinBandWithInviteRemote,
   listBandsDetailForUserRemote,
   loginWithPasswordRemote,
   peekInviteBandNameRemote,
+  regenerateOwnedBandInviteRemote,
   registerAccountRemote,
+  renameOwnedBandRemote,
 } from '../lib/supabase/remoteRegistry';
 import type { RegisterInput } from './registerTypes';
 
@@ -228,6 +231,77 @@ export async function createOwnedBand(userId: string, bandName: string): Promise
     createdAt: now,
   });
   r.memberships.push({ userId, bandId, role: 'owner' });
+  await saveRegistry(r);
+  return { ok: true, profile: buildProfileFromRegistry(r, user) };
+}
+
+export async function renameOwnedBand(userId: string, nextBandName: string): Promise<JoinBandResult> {
+  const name = nextBandName.trim();
+  if (!name) {
+    return { ok: false, message: 'Informe o nome da banda.' };
+  }
+  if (isSupabaseConfigured()) {
+    return renameOwnedBandRemote(name);
+  }
+  const r = await loadRegistry();
+  const user = r.users.find((u) => u.id === userId);
+  if (!user) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const owned = r.bands.find((b) => b.ownerUserId === userId);
+  if (!owned) {
+    return { ok: false, message: 'Você ainda não tem banda como administrador.' };
+  }
+  owned.name = name;
+  await saveRegistry(r);
+  return { ok: true, profile: buildProfileFromRegistry(r, user) };
+}
+
+export async function regenerateOwnedBandInvite(userId: string): Promise<JoinBandResult> {
+  if (isSupabaseConfigured()) {
+    return regenerateOwnedBandInviteRemote();
+  }
+  const r = await loadRegistry();
+  const user = r.users.find((u) => u.id === userId);
+  if (!user) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const owned = r.bands.find((b) => b.ownerUserId === userId);
+  if (!owned) {
+    return { ok: false, message: 'Você ainda não tem banda como administrador.' };
+  }
+  let token = '';
+  for (let i = 0; i < 8; i++) {
+    const candidate = newInviteToken();
+    if (!r.bands.some((b) => b.inviteToken === candidate)) {
+      token = candidate;
+      break;
+    }
+  }
+  if (!token) {
+    return { ok: false, message: 'Não foi possível gerar novo convite agora. Tente de novo.' };
+  }
+  owned.inviteToken = token;
+  await saveRegistry(r);
+  return { ok: true, profile: buildProfileFromRegistry(r, user) };
+}
+
+export async function deleteOwnedBand(userId: string): Promise<JoinBandResult> {
+  if (isSupabaseConfigured()) {
+    return deleteOwnedBandRemote();
+  }
+  const r = await loadRegistry();
+  const user = r.users.find((u) => u.id === userId);
+  if (!user) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const owned = r.bands.find((b) => b.ownerUserId === userId);
+  if (!owned) {
+    return { ok: false, message: 'Você ainda não tem banda como administrador.' };
+  }
+  const bandId = owned.id;
+  r.bands = r.bands.filter((b) => b.id !== bandId);
+  r.memberships = r.memberships.filter((m) => m.bandId !== bandId);
   await saveRegistry(r);
   return { ok: true, profile: buildProfileFromRegistry(r, user) };
 }
