@@ -6,6 +6,24 @@ import { buildInviteUrl, parseInviteToken } from '../inviteLink';
 import { getSupabase } from './client';
 import { isSupabaseConfigured } from './config';
 
+const SUPABASE_OP_TIMEOUT_MS = 15000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMessage: string, ms = SUPABASE_OP_TIMEOUT_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(timeoutMessage)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 export type RemoteLoginResult =
   | { ok: true; profile: PersistedProfile }
   | { ok: false; message: string };
@@ -52,7 +70,7 @@ function mapOwnedBandRpcError(err: { message?: string; code?: string } | null): 
     return 'Sessão inválida. Entre de novo.';
   }
   if (m.includes('already_has_owned_band')) {
-    return 'Você já criou uma banda como administrador. Use o link de convite ou entre em outras bandas com código.';
+    return 'A função SQL create_owned_band ainda limita a uma banda por utilizador. Atualize essa função no Supabase para permitir várias bandas.';
   }
   if (m.includes('empty_band_name')) {
     return 'Informe o nome da banda.';
@@ -63,16 +81,26 @@ function mapOwnedBandRpcError(err: { message?: string; code?: string } | null): 
   if (
     m.includes('primary_owner_user_id') ||
     m.includes('owner_user_id') ||
+    m.includes('band_memberships_user_id_key') ||
+    m.includes('already_in_band') ||
     m.includes('already has owned band') ||
     m.includes('already_has_owned_band')
   ) {
-    return 'Você já criou uma banda como administrador. Use o link de convite ou entre em outras bandas com código.';
+    return 'Restrição de unicidade no Supabase bloqueou a operação. Se quiser múltiplas bandas por utilizador, remova a restrição única em band_memberships(user_id) e a validação de create_owned_band.';
   }
-  if (m.includes('unique') || m.includes('duplicate') || m.includes('invite_token')) {
+  const mentionsInviteToken =
+    m.includes('invite_token') || m.includes('bands_invite_token_key') || m.includes('invite token');
+  if ((m.includes('unique') || m.includes('duplicate')) && mentionsInviteToken) {
     return 'Conflito no código de convite. Tente criar a banda de novo.';
+  }
+  if (m.includes('unique') || m.includes('duplicate')) {
+    return `Conflito de dados ao criar banda no Supabase. Detalhe: ${raw.trim() || 'erro de unicidade'}`;
   }
   if (m.includes('create_owned_band') && (m.includes('does not exist') || m.includes('schema cache'))) {
     return 'Função create_owned_band em falta no Supabase. Execute a migração 20260329140000_create_owned_band_rpc.sql no SQL Editor do projeto.';
+  }
+  if (m.includes('infinite recursion') && m.includes('policy') && m.includes('bands')) {
+    return 'Política RLS recursiva em bands detectada no Supabase. Aplique a migração de RPC create_owned_band e use esse fluxo para criar banda.';
   }
   if (m.includes('permission denied') || m.includes('rls')) {
     return mapDbError(raw);
@@ -89,79 +117,10 @@ function isInviteTokenConflictError(err: { message?: string; code?: string } | n
     m.includes('already_has_owned_band') ||
     m.includes('already has owned band');
   if (looksLikeOwnerUniq) return false;
-  return (
-    (err.code === '23505' && m.includes('invite')) ||
-    (m.includes('unique') && m.includes('invite_token')) ||
-    (m.includes('duplicate key value') && m.includes('invite')) ||
-    m.includes('invite_token')
-  );
-}
-
-function isMissingCreateOwnedBandRpc(err: { message?: string; code?: string } | null): boolean {
-  if (!err) return false;
-  const m = (err.message ?? '').toLowerCase();
-  return (
-    m.includes('create_owned_band') &&
-    (m.includes('does not exist') || m.includes('schema cache') || m.includes('function') || m.includes('not found'))
-  );
-}
-
-async function createOwnedBandDirectWithRetry(
-  sb: ReturnType<typeof getSupabase>,
-  userId: string,
-  bandName: string,
-): Promise<{ ok: true; bandId: string; inviteToken: string } | { ok: false; error: { message?: string; code?: string } | null }> {
-  const { data: alreadyOwned, error: ownedErr } = await sb
-    .from('bands')
-    .select('id')
-    .eq('primary_owner_user_id', userId)
-    .limit(1)
-    .maybeSingle();
-  if (ownedErr) return { ok: false, error: ownedErr };
-  if (alreadyOwned?.id) {
-    return { ok: false, error: { message: 'already_has_owned_band' } };
-  }
-
-  const MAX_TRIES = 6;
-  for (let i = 0; i < MAX_TRIES; i++) {
-    const token = newInviteToken();
-    const { data: insertedBand, error: bandErr } = await sb
-      .from('bands')
-      .insert({
-        name: bandName,
-        primary_owner_user_id: userId,
-        invite_token: token,
-      })
-      .select('id')
-      .single();
-
-    if (bandErr) {
-      if (isInviteTokenConflictError(bandErr)) continue;
-      return { ok: false, error: bandErr };
-    }
-
-    const bandId = insertedBand?.id;
-    if (!bandId) {
-      return { ok: false, error: { message: 'Falha ao criar banda: id ausente.' } };
-    }
-
-    const { error: membershipErr } = await sb
-      .from('band_memberships')
-      .insert({ band_id: bandId, user_id: userId, role: 'admin' });
-
-    if (!membershipErr) {
-      return { ok: true, bandId, inviteToken: token };
-    }
-
-    // Evita banda "órfã" sem membership se a segunda inserção falhar.
-    await sb.from('bands').delete().eq('id', bandId).eq('primary_owner_user_id', userId);
-    return { ok: false, error: membershipErr };
-  }
-
-  return {
-    ok: false,
-    error: { message: 'Conflito repetido ao gerar código de convite. Tente novamente em alguns segundos.' },
-  };
+  const looksLikeUniqueViolation = err.code === '23505' || m.includes('duplicate key value') || m.includes('unique');
+  const mentionsInviteToken =
+    m.includes('invite_token') || m.includes('bands_invite_token_key') || m.includes('invite token');
+  return looksLikeUniqueViolation && mentionsInviteToken;
 }
 
 async function createOwnedBandWithRetry(
@@ -172,15 +131,45 @@ async function createOwnedBandWithRetry(
   const MAX_TRIES = 6;
   for (let i = 0; i < MAX_TRIES; i++) {
     const token = newInviteToken();
-    const { data: bandIdRaw, error } = await sb.rpc('create_owned_band', {
-      p_name: bandName,
-      p_invite_token: token,
-    });
-    if (!error && bandIdRaw != null) {
-      return { ok: true, bandId: String(bandIdRaw), inviteToken: token };
+    let bandInsert:
+      | { data: { id: string } | null; error: { message?: string; code?: string } | null }
+      | null = null;
+    try {
+      bandInsert = await withTimeout(
+        Promise.resolve(
+          sb
+            .from('bands')
+            .insert({
+              name: bandName,
+              primary_owner_user_id: userId,
+              invite_token: token,
+            })
+            .select('id')
+            .single(),
+        ),
+        'Tempo esgotado ao criar banda no Supabase. Verifique as policies e tente de novo.',
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Falha de comunicação com o Supabase.';
+      return { ok: false, error: { message } };
     }
-    if (isMissingCreateOwnedBandRpc(error)) {
-      return createOwnedBandDirectWithRetry(sb, userId, bandName);
+    const bandId = bandInsert?.data?.id;
+    const error = bandInsert?.error ?? null;
+    if (!error && bandId) {
+      const membership = await withTimeout(
+        Promise.resolve(
+          sb.from('band_memberships').insert({
+            band_id: bandId,
+            user_id: userId,
+            role: 'admin',
+          }),
+        ),
+        'Tempo esgotado ao vincular o utilizador à nova banda. Tente de novo.',
+      );
+      if (!membership.error) {
+        return { ok: true, bandId, inviteToken: token };
+      }
+      return { ok: false, error: membership.error };
     }
     if (!isInviteTokenConflictError(error)) {
       return { ok: false, error };
@@ -205,9 +194,25 @@ async function resolveAuthUser(sb: ReturnType<typeof getSupabase>): Promise<User
 
 function newInviteToken(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  let s = 'inv_';
-  for (let i = 0; i < 22; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return s;
+  const randomLen = 24;
+  let randomPart = '';
+
+  const maybeCrypto = (globalThis as { crypto?: { getRandomValues?: (arr: Uint8Array) => Uint8Array } }).crypto;
+  if (maybeCrypto?.getRandomValues) {
+    const bytes = new Uint8Array(randomLen);
+    maybeCrypto.getRandomValues(bytes);
+    for (let i = 0; i < bytes.length; i++) {
+      randomPart += chars[bytes[i] % chars.length];
+    }
+  } else {
+    for (let i = 0; i < randomLen; i++) {
+      randomPart += chars[Math.floor(Math.random() * chars.length)];
+    }
+  }
+
+  // Inclui entropia temporal para reduzir ainda mais qualquer chance de colisão.
+  const timePart = Date.now().toString(36);
+  return `inv_${timePart}_${randomPart}`;
 }
 
 /** Perfil mínimo só a partir do JWT (OAuth Google, etc.) quando o Postgres ainda não respondeu. */
@@ -394,7 +399,10 @@ export async function registerAccountRemote(input: RegisterInput): Promise<Remot
     | null = null;
   if (input.isBand && input.bandName.trim()) {
     const trimmedBandName = input.bandName.trim();
-    const ownedCreate = await createOwnedBandWithRetry(sb, userId, trimmedBandName);
+    const ownedCreate = await withTimeout(
+      createOwnedBandWithRetry(sb, userId, trimmedBandName),
+      'Tempo esgotado ao criar banda no Supabase. Verifique as policies/RPC e tente de novo.',
+    );
     if (!ownedCreate.ok) {
       return {
         ok: false,
@@ -449,7 +457,10 @@ export async function createOwnedBandRemote(bandName: string): Promise<RemoteLog
     };
   }
 
-  const profile = await buildPersistedProfileForUser(user);
+  const profile = await withTimeout(
+    buildPersistedProfileForUser(user),
+    'Banda criada, mas o perfil demorou demais para atualizar. Recarregue a página.',
+  );
   if (!profile) {
     return { ok: false, message: 'Banda criada, mas falhou ao atualizar o perfil.' };
   }
@@ -479,7 +490,7 @@ async function getOwnedBandForUserId(
   return data;
 }
 
-export async function renameOwnedBandRemote(nextBandName: string): Promise<RemoteLoginResult> {
+export async function renameOwnedBandRemote(nextBandName: string, bandId?: string): Promise<RemoteLoginResult> {
   const name = nextBandName.trim();
   if (!name) {
     return { ok: false, message: 'Informe o nome da banda.' };
@@ -489,7 +500,15 @@ export async function renameOwnedBandRemote(nextBandName: string): Promise<Remot
   if (!user) {
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
   }
-  const owned = await getOwnedBandForUserId(sb, user.id);
+  const owned = bandId
+    ? await sb
+        .from('bands')
+        .select('id, name, invite_token')
+        .eq('id', bandId)
+        .eq('primary_owner_user_id', user.id)
+        .maybeSingle()
+        .then(({ data, error }) => (error || !data ? null : data))
+    : await getOwnedBandForUserId(sb, user.id);
   if (!owned) {
     return { ok: false, message: 'Você ainda não tem banda como administrador.' };
   }
@@ -506,13 +525,21 @@ export async function renameOwnedBandRemote(nextBandName: string): Promise<Remot
   return { ok: true, profile };
 }
 
-export async function regenerateOwnedBandInviteRemote(): Promise<RemoteLoginResult> {
+export async function regenerateOwnedBandInviteRemote(bandId?: string): Promise<RemoteLoginResult> {
   const sb = getSupabase();
   const user = await resolveAuthUser(sb);
   if (!user) {
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
   }
-  const owned = await getOwnedBandForUserId(sb, user.id);
+  const owned = bandId
+    ? await sb
+        .from('bands')
+        .select('id, name, invite_token')
+        .eq('id', bandId)
+        .eq('primary_owner_user_id', user.id)
+        .maybeSingle()
+        .then(({ data, error }) => (error || !data ? null : data))
+    : await getOwnedBandForUserId(sb, user.id);
   if (!owned) {
     return { ok: false, message: 'Você ainda não tem banda como administrador.' };
   }
@@ -539,29 +566,75 @@ export async function regenerateOwnedBandInviteRemote(): Promise<RemoteLoginResu
   return { ok: false, message: 'Não foi possível gerar um novo código de convite agora. Tente de novo.' };
 }
 
-export async function deleteOwnedBandRemote(): Promise<RemoteLoginResult> {
+export async function deleteOwnedBandRemote(bandId?: string): Promise<RemoteLoginResult> {
   const sb = getSupabase();
   const user = await resolveAuthUser(sb);
   if (!user) {
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
   }
-  const owned = await getOwnedBandForUserId(sb, user.id);
+  const owned = bandId
+    ? await sb
+        .from('bands')
+        .select('id, name, invite_token')
+        .eq('id', bandId)
+        .eq('primary_owner_user_id', user.id)
+        .maybeSingle()
+        .then(({ data, error }) => (error || !data ? null : data))
+    : await getOwnedBandForUserId(sb, user.id);
   if (!owned) {
     return { ok: false, message: 'Você ainda não tem banda como administrador.' };
   }
 
-  const { error: membershipsErr } = await sb.from('band_memberships').delete().eq('band_id', owned.id);
-  if (membershipsErr) {
-    return { ok: false, message: mapDbError(membershipsErr.message) };
+  const targetBandId = owned.id;
+
+  const { error: rpcErr } = await withTimeout(
+    Promise.resolve(sb.rpc('delete_owned_band', { p_band_id: targetBandId })),
+    'Tempo esgotado ao excluir banda no Supabase. Tente novamente.',
+  );
+  if (!rpcErr) {
+    const { data: stillThere, error: verifyErr } = await sb
+      .from('bands')
+      .select('id')
+      .eq('id', targetBandId)
+      .eq('primary_owner_user_id', user.id)
+      .maybeSingle();
+    if (!verifyErr && !stillThere) {
+      const profile = await buildPersistedProfileForUser(user);
+      if (!profile) return { ok: false, message: 'Banda removida, mas falhou ao carregar o perfil.' };
+      return { ok: true, profile };
+    }
   }
-  const { error: bandErr } = await sb
-    .from('bands')
-    .delete()
-    .eq('id', owned.id)
-    .eq('primary_owner_user_id', user.id);
+
+  const rpcMsg = (rpcErr?.message ?? '').toLowerCase();
+  const rpcMissing =
+    rpcMsg.includes('delete_owned_band') &&
+    (rpcMsg.includes('does not exist') || rpcMsg.includes('schema cache') || rpcMsg.includes('function'));
+
+  const { data: deletedRows, error: bandErr } = await withTimeout(
+    Promise.resolve(
+      sb.from('bands').delete().eq('id', targetBandId).eq('primary_owner_user_id', user.id).select('id'),
+    ),
+    'Tempo esgotado ao excluir banda no Supabase. Tente novamente.',
+  );
   if (bandErr) {
+    const m = (bandErr.message ?? '').toLowerCase();
+    if (rpcMissing || m.includes('rls') || m.includes('permission denied')) {
+      return {
+        ok: false,
+        message:
+          'Exclusão bloqueada no Supabase (RLS). Crie a RPC delete_owned_band no SQL Editor ou adicione policy DELETE em bands para o owner.',
+      };
+    }
     return { ok: false, message: mapDbError(bandErr.message) };
   }
+  if (!deletedRows || deletedRows.length === 0) {
+    return {
+      ok: false,
+      message:
+        'A banda não foi excluída (sem permissão do owner ou registro não encontrado). Verifique se está logado com a conta dona da banda.',
+    };
+  }
+
   const profile = await buildPersistedProfileForUser(user);
   if (!profile) return { ok: false, message: 'Banda removida, mas falhou ao carregar o perfil.' };
   return { ok: true, profile };
@@ -615,24 +688,30 @@ export async function getInviteUrlForOwnedBandRemote(ownerBandId: string): Promi
   return buildInviteUrl(data.invite_token);
 }
 
-export async function listBandsDetailForUserRemote(userId: string): Promise<{ name: string; role: string }[]> {
+export async function listBandsDetailForUserRemote(
+  userId: string,
+): Promise<{ id: string; name: string; role: string; canManage: boolean }[]> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from('band_memberships')
-    .select('role, bands ( name )')
+    .select('role, bands ( id, name, primary_owner_user_id )')
     .eq('user_id', userId);
   if (error || !data) return [];
-  type R = { role: string; bands: { name: string } | null };
+  type R = { role: string; bands: { id: string; name: string; primary_owner_user_id: string } | null };
   return (data as unknown as R[])
     .map((row) => {
       const name = row.bands?.name;
-      if (!name) return null;
+      const id = row.bands?.id;
+      const ownerId = row.bands?.primary_owner_user_id;
+      if (!name || !id || !ownerId) return null;
       return {
+        id,
         name,
         role: row.role === 'admin' ? 'Administrador' : 'Membro',
+        canManage: ownerId === userId,
       };
     })
-    .filter((x): x is { name: string; role: string } => x !== null);
+    .filter((x): x is { id: string; name: string; role: string; canManage: boolean } => x !== null);
 }
 
 export async function peekInviteBandNameRemote(token: string): Promise<string | null> {

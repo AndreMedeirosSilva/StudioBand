@@ -84,9 +84,24 @@ function randomSuffix(): string {
 
 function newInviteToken(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  let s = 'inv_';
-  for (let i = 0; i < 22; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return s;
+  const randomLen = 24;
+  let randomPart = '';
+
+  const maybeCrypto = (globalThis as { crypto?: { getRandomValues?: (arr: Uint8Array) => Uint8Array } }).crypto;
+  if (maybeCrypto?.getRandomValues) {
+    const bytes = new Uint8Array(randomLen);
+    maybeCrypto.getRandomValues(bytes);
+    for (let i = 0; i < bytes.length; i++) {
+      randomPart += chars[bytes[i] % chars.length];
+    }
+  } else {
+    for (let i = 0; i < randomLen; i++) {
+      randomPart += chars[Math.floor(Math.random() * chars.length)];
+    }
+  }
+
+  const timePart = Date.now().toString(36);
+  return `inv_${timePart}_${randomPart}`;
 }
 
 function findUserByEmail(r: LocalRegistryV1, email: string): LocalUser | undefined {
@@ -214,12 +229,6 @@ export async function createOwnedBand(userId: string, bandName: string): Promise
   if (!user) {
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
   }
-  if (r.bands.some((b) => b.ownerUserId === userId)) {
-    return {
-      ok: false,
-      message: 'Você já criou uma banda como administrador. Convide membros pelo link ou entre em outras bandas com código.',
-    };
-  }
   const now = new Date().toISOString();
   const bandId = `bnd_${randomSuffix()}`;
   const inviteToken = newInviteToken();
@@ -235,20 +244,22 @@ export async function createOwnedBand(userId: string, bandName: string): Promise
   return { ok: true, profile: buildProfileFromRegistry(r, user) };
 }
 
-export async function renameOwnedBand(userId: string, nextBandName: string): Promise<JoinBandResult> {
+export async function renameOwnedBand(userId: string, nextBandName: string, bandId?: string): Promise<JoinBandResult> {
   const name = nextBandName.trim();
   if (!name) {
     return { ok: false, message: 'Informe o nome da banda.' };
   }
   if (isSupabaseConfigured()) {
-    return renameOwnedBandRemote(name);
+    return renameOwnedBandRemote(name, bandId);
   }
   const r = await loadRegistry();
   const user = r.users.find((u) => u.id === userId);
   if (!user) {
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
   }
-  const owned = r.bands.find((b) => b.ownerUserId === userId);
+  const owned = bandId
+    ? r.bands.find((b) => b.id === bandId && b.ownerUserId === userId)
+    : r.bands.find((b) => b.ownerUserId === userId);
   if (!owned) {
     return { ok: false, message: 'Você ainda não tem banda como administrador.' };
   }
@@ -257,16 +268,18 @@ export async function renameOwnedBand(userId: string, nextBandName: string): Pro
   return { ok: true, profile: buildProfileFromRegistry(r, user) };
 }
 
-export async function regenerateOwnedBandInvite(userId: string): Promise<JoinBandResult> {
+export async function regenerateOwnedBandInvite(userId: string, bandId?: string): Promise<JoinBandResult> {
   if (isSupabaseConfigured()) {
-    return regenerateOwnedBandInviteRemote();
+    return regenerateOwnedBandInviteRemote(bandId);
   }
   const r = await loadRegistry();
   const user = r.users.find((u) => u.id === userId);
   if (!user) {
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
   }
-  const owned = r.bands.find((b) => b.ownerUserId === userId);
+  const owned = bandId
+    ? r.bands.find((b) => b.id === bandId && b.ownerUserId === userId)
+    : r.bands.find((b) => b.ownerUserId === userId);
   if (!owned) {
     return { ok: false, message: 'Você ainda não tem banda como administrador.' };
   }
@@ -286,22 +299,24 @@ export async function regenerateOwnedBandInvite(userId: string): Promise<JoinBan
   return { ok: true, profile: buildProfileFromRegistry(r, user) };
 }
 
-export async function deleteOwnedBand(userId: string): Promise<JoinBandResult> {
+export async function deleteOwnedBand(userId: string, bandId?: string): Promise<JoinBandResult> {
   if (isSupabaseConfigured()) {
-    return deleteOwnedBandRemote();
+    return deleteOwnedBandRemote(bandId);
   }
   const r = await loadRegistry();
   const user = r.users.find((u) => u.id === userId);
   if (!user) {
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
   }
-  const owned = r.bands.find((b) => b.ownerUserId === userId);
+  const owned = bandId
+    ? r.bands.find((b) => b.id === bandId && b.ownerUserId === userId)
+    : r.bands.find((b) => b.ownerUserId === userId);
   if (!owned) {
     return { ok: false, message: 'Você ainda não tem banda como administrador.' };
   }
-  const bandId = owned.id;
-  r.bands = r.bands.filter((b) => b.id !== bandId);
-  r.memberships = r.memberships.filter((m) => m.bandId !== bandId);
+  const targetBandId = owned.id;
+  r.bands = r.bands.filter((b) => b.id !== targetBandId);
+  r.memberships = r.memberships.filter((m) => m.bandId !== targetBandId);
   await saveRegistry(r);
   return { ok: true, profile: buildProfileFromRegistry(r, user) };
 }
@@ -414,7 +429,9 @@ export async function getInviteUrlForOwnedBand(ownerBandId: string): Promise<str
   return buildInviteUrl(b.inviteToken);
 }
 
-export async function listBandsDetailForUser(userId: string): Promise<{ name: string; role: string }[]> {
+export async function listBandsDetailForUser(
+  userId: string,
+): Promise<{ id: string; name: string; role: string; canManage: boolean }[]> {
   if (isSupabaseConfigured()) {
     return listBandsDetailForUserRemote(userId);
   }
@@ -425,9 +442,11 @@ export async function listBandsDetailForUser(userId: string): Promise<{ name: st
       const band = r.bands.find((b) => b.id === m.bandId);
       if (!band) return null;
       return {
+        id: band.id,
         name: band.name,
         role: m.role === 'owner' ? 'Administrador' : 'Membro',
+        canManage: band.ownerUserId === userId,
       };
     })
-    .filter((x): x is { name: string; role: string } => x !== null);
+    .filter((x): x is { id: string; name: string; role: string; canManage: boolean } => x !== null);
 }

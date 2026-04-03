@@ -65,7 +65,7 @@ export function HomeScreen({
   const pad = Math.min(24, Math.max(16, width * 0.05));
 
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
-  const [bandRows, setBandRows] = useState<{ name: string; role: string }[]>([]);
+  const [bandRows, setBandRows] = useState<{ id: string; name: string; role: string; canManage: boolean }[]>([]);
   const [joinCode, setJoinCode] = useState('');
   const [joinBandPreview, setJoinBandPreview] = useState<string | null>(null);
   const [joinBusy, setJoinBusy] = useState(false);
@@ -74,6 +74,7 @@ export function HomeScreen({
   const [bandModalBusy, setBandModalBusy] = useState(false);
   const [bandEditModalOpen, setBandEditModalOpen] = useState(false);
   const [editBandName, setEditBandName] = useState('');
+  const [editBandId, setEditBandId] = useState<string | null>(null);
   const [bandCrudBusy, setBandCrudBusy] = useState(false);
 
   useEffect(() => {
@@ -98,7 +99,8 @@ export function HomeScreen({
 
   useEffect(() => {
     setEditBandName(profile.ownedBandName ?? '');
-  }, [profile.ownedBandName]);
+    setEditBandId(profile.ownedBandId ?? null);
+  }, [profile.ownedBandId, profile.ownedBandName]);
 
   useEffect(() => {
     const t = joinCodePrefill?.trim();
@@ -178,16 +180,26 @@ export function HomeScreen({
     }
   }, [joinCode, profile.userId, onProfileUpdate]);
 
+  const openEditBandModal = useCallback((bandId: string, bandName: string) => {
+    setEditBandId(bandId);
+    setEditBandName(bandName);
+    setBandEditModalOpen(true);
+  }, []);
+
   const applyRenameBand = useCallback(async () => {
     const name = editBandName.trim();
     if (!name) {
       Alert.alert('Banda', 'Informe o novo nome da banda.');
       return;
     }
+    if (!editBandId) {
+      Alert.alert('Banda', 'Selecione a banda para editar.');
+      return;
+    }
     if (!profile.userId) return;
     setBandCrudBusy(true);
     try {
-      const res = await renameOwnedBand(profile.userId, name);
+      const res = await renameOwnedBand(profile.userId, name, editBandId);
       if (!res.ok) {
         Alert.alert('Banda', res.message);
         return;
@@ -198,13 +210,13 @@ export function HomeScreen({
     } finally {
       setBandCrudBusy(false);
     }
-  }, [editBandName, onProfileUpdate, profile.userId]);
+  }, [editBandId, editBandName, onProfileUpdate, profile.userId]);
 
-  const applyRegenerateInvite = useCallback(async () => {
+  const applyRegenerateInvite = useCallback(async (bandId: string) => {
     if (!profile.userId) return;
     setBandCrudBusy(true);
     try {
-      const res = await regenerateOwnedBandInvite(profile.userId);
+      const res = await regenerateOwnedBandInvite(profile.userId, bandId);
       if (!res.ok) {
         Alert.alert('Convite', res.message);
         return;
@@ -216,11 +228,11 @@ export function HomeScreen({
     }
   }, [onProfileUpdate, profile.userId]);
 
-  const applyDeleteBand = useCallback(() => {
-    if (!profile.userId || !profile.ownedBandId) return;
+  const applyDeleteBand = useCallback((bandId: string, bandName: string) => {
+    if (!profile.userId) return;
     Alert.alert(
       'Excluir banda',
-      'Esta ação remove a banda e as associações de membros. Deseja continuar?',
+      `Esta ação remove a banda “${bandName}” e as associações de membros. Deseja continuar?`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -228,13 +240,22 @@ export function HomeScreen({
           style: 'destructive',
           onPress: () => {
             setBandCrudBusy(true);
-            void deleteOwnedBand(profile.userId)
-              .then((res) => {
+            void deleteOwnedBand(profile.userId, bandId)
+              .then(async (res) => {
                 if (!res.ok) {
                   Alert.alert('Banda', res.message);
                   return;
                 }
+                // Remove imediatamente da lista para evitar item "fantasma" na UI.
+                setBandRows((prev) => prev.filter((row) => row.id !== bandId));
+                if (editBandId === bandId) {
+                  setBandEditModalOpen(false);
+                  setEditBandId(null);
+                  setEditBandName('');
+                }
                 onProfileUpdate(res.profile);
+                const refreshed = await listBandsDetailForUser(profile.userId);
+                setBandRows(refreshed);
                 Alert.alert('Banda', 'Banda excluída com sucesso.');
               })
               .finally(() => setBandCrudBusy(false));
@@ -242,7 +263,7 @@ export function HomeScreen({
         },
       ],
     );
-  }, [onProfileUpdate, profile.ownedBandId, profile.userId]);
+  }, [editBandId, onProfileUpdate, profile.userId]);
 
   const copyInvite = async () => {
     if (!inviteUrl) return;
@@ -338,23 +359,29 @@ export function HomeScreen({
                 <Text style={styles.bandPathBody}>
                   Ainda não tem banda como administrador? Use o botão para registar o nome. No cadastro da conta também pode marcar “Criar banda”.
                 </Text>
-                {!profile.ownedBandId ? (
-                  <Pressable
-                    onPress={() => setBandModalOpen(true)}
-                    style={({ pressed }) => [styles.registerBandBtn, pressed && styles.pressed]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Cadastrar banda"
-                  >
-                    <Text style={styles.registerBandBtnText}>Cadastrar banda</Text>
-                  </Pressable>
-                ) : (
+                <Pressable
+                  onPress={() => setBandModalOpen(true)}
+                  style={({ pressed }) => [styles.registerBandBtn, pressed && styles.pressed]}
+                  accessibilityRole="button"
+                  accessibilityLabel={profile.ownedBandId ? 'Cadastrar nova banda' : 'Cadastrar banda'}
+                >
+                  <Text style={styles.registerBandBtnText}>
+                    {profile.ownedBandId ? 'Cadastrar nova banda' : 'Cadastrar banda'}
+                  </Text>
+                </Pressable>
+                {profile.ownedBandId ? (
                   <View style={styles.ownerCrudWrap}>
                     <Text style={styles.bandOwnerNote}>
-                      Já administra esta banda: <Text style={styles.ownerBandName}>{profile.ownedBandName ?? 'Sem nome'}</Text>
+                      Banda selecionada para edição/exclusão:{' '}
+                      <Text style={styles.ownerBandName}>{profile.ownedBandName ?? 'Sem nome'}</Text>
                     </Text>
                     <View style={styles.ownerCrudActions}>
                       <Pressable
-                        onPress={() => setBandEditModalOpen(true)}
+                        onPress={() =>
+                          profile.ownedBandId
+                            ? openEditBandModal(profile.ownedBandId, profile.ownedBandName ?? 'Sem nome')
+                            : undefined
+                        }
                         disabled={bandCrudBusy}
                         style={({ pressed }) => [styles.ownerCrudBtn, bandCrudBusy && styles.joinBtnOff, pressed && !bandCrudBusy && styles.pressed]}
                         accessibilityRole="button"
@@ -363,7 +390,7 @@ export function HomeScreen({
                         <Text style={styles.ownerCrudBtnText}>Editar nome</Text>
                       </Pressable>
                       <Pressable
-                        onPress={() => void applyRegenerateInvite()}
+                        onPress={() => profile.ownedBandId && void applyRegenerateInvite(profile.ownedBandId)}
                         disabled={bandCrudBusy}
                         style={({ pressed }) => [styles.ownerCrudBtn, bandCrudBusy && styles.joinBtnOff, pressed && !bandCrudBusy && styles.pressed]}
                         accessibilityRole="button"
@@ -372,7 +399,10 @@ export function HomeScreen({
                         <Text style={styles.ownerCrudBtnText}>Novo código</Text>
                       </Pressable>
                       <Pressable
-                        onPress={applyDeleteBand}
+                        onPress={() =>
+                          profile.ownedBandId &&
+                          applyDeleteBand(profile.ownedBandId, profile.ownedBandName ?? 'Sem nome')
+                        }
                         disabled={bandCrudBusy}
                         style={({ pressed }) => [
                           styles.ownerCrudBtnDanger,
@@ -386,7 +416,7 @@ export function HomeScreen({
                       </Pressable>
                     </View>
                   </View>
-                )}
+                ) : null}
               </View>
 
               {inviteUrl ? (
@@ -500,7 +530,7 @@ export function HomeScreen({
                 {bandRows.length > 0 ? (
                   bandRows.map((row, i) => (
                     <View
-                      key={`${row.name}-${row.role}-${i}`}
+                      key={`${row.id}-${row.role}-${i}`}
                       style={[styles.bandChip, i > 0 && styles.bandChipSpaced]}
                     >
                       <View style={styles.bandChipMain}>
@@ -511,6 +541,49 @@ export function HomeScreen({
                           {row.role}
                         </Text>
                       </View>
+                      {row.canManage ? (
+                        <View style={styles.bandChipActions}>
+                          <Pressable
+                            onPress={() => openEditBandModal(row.id, row.name)}
+                            disabled={bandCrudBusy}
+                            style={({ pressed }) => [
+                              styles.ownerCrudBtn,
+                              bandCrudBusy && styles.joinBtnOff,
+                              pressed && !bandCrudBusy && styles.pressed,
+                            ]}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Editar ${row.name}`}
+                          >
+                            <Text style={styles.ownerCrudBtnText}>Editar</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => void applyRegenerateInvite(row.id)}
+                            disabled={bandCrudBusy}
+                            style={({ pressed }) => [
+                              styles.ownerCrudBtn,
+                              bandCrudBusy && styles.joinBtnOff,
+                              pressed && !bandCrudBusy && styles.pressed,
+                            ]}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Gerar novo código para ${row.name}`}
+                          >
+                            <Text style={styles.ownerCrudBtnText}>Novo código</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => applyDeleteBand(row.id, row.name)}
+                            disabled={bandCrudBusy}
+                            style={({ pressed }) => [
+                              styles.ownerCrudBtnDanger,
+                              bandCrudBusy && styles.joinBtnOff,
+                              pressed && !bandCrudBusy && styles.pressed,
+                            ]}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Excluir ${row.name}`}
+                          >
+                            <Text style={styles.ownerCrudBtnDangerText}>Excluir</Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
                     </View>
                   ))
                 ) : (
@@ -1021,6 +1094,12 @@ const styles = StyleSheet.create({
   },
   bandChipMain: {
     minWidth: 0,
+  },
+  bandChipActions: {
+    marginTop: 10,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
   },
   bandChipName: {
     fontSize: 15,
