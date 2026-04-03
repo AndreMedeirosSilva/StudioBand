@@ -97,8 +97,76 @@ function isInviteTokenConflictError(err: { message?: string; code?: string } | n
   );
 }
 
+function isMissingCreateOwnedBandRpc(err: { message?: string; code?: string } | null): boolean {
+  if (!err) return false;
+  const m = (err.message ?? '').toLowerCase();
+  return (
+    m.includes('create_owned_band') &&
+    (m.includes('does not exist') || m.includes('schema cache') || m.includes('function') || m.includes('not found'))
+  );
+}
+
+async function createOwnedBandDirectWithRetry(
+  sb: ReturnType<typeof getSupabase>,
+  userId: string,
+  bandName: string,
+): Promise<{ ok: true; bandId: string; inviteToken: string } | { ok: false; error: { message?: string; code?: string } | null }> {
+  const { data: alreadyOwned, error: ownedErr } = await sb
+    .from('bands')
+    .select('id')
+    .eq('primary_owner_user_id', userId)
+    .limit(1)
+    .maybeSingle();
+  if (ownedErr) return { ok: false, error: ownedErr };
+  if (alreadyOwned?.id) {
+    return { ok: false, error: { message: 'already_has_owned_band' } };
+  }
+
+  const MAX_TRIES = 6;
+  for (let i = 0; i < MAX_TRIES; i++) {
+    const token = newInviteToken();
+    const { data: insertedBand, error: bandErr } = await sb
+      .from('bands')
+      .insert({
+        name: bandName,
+        primary_owner_user_id: userId,
+        invite_token: token,
+      })
+      .select('id')
+      .single();
+
+    if (bandErr) {
+      if (isInviteTokenConflictError(bandErr)) continue;
+      return { ok: false, error: bandErr };
+    }
+
+    const bandId = insertedBand?.id;
+    if (!bandId) {
+      return { ok: false, error: { message: 'Falha ao criar banda: id ausente.' } };
+    }
+
+    const { error: membershipErr } = await sb
+      .from('band_memberships')
+      .insert({ band_id: bandId, user_id: userId, role: 'admin' });
+
+    if (!membershipErr) {
+      return { ok: true, bandId, inviteToken: token };
+    }
+
+    // Evita banda "órfã" sem membership se a segunda inserção falhar.
+    await sb.from('bands').delete().eq('id', bandId).eq('primary_owner_user_id', userId);
+    return { ok: false, error: membershipErr };
+  }
+
+  return {
+    ok: false,
+    error: { message: 'Conflito repetido ao gerar código de convite. Tente novamente em alguns segundos.' },
+  };
+}
+
 async function createOwnedBandWithRetry(
   sb: ReturnType<typeof getSupabase>,
+  userId: string,
   bandName: string,
 ): Promise<{ ok: true; bandId: string; inviteToken: string } | { ok: false; error: { message?: string; code?: string } | null }> {
   const MAX_TRIES = 6;
@@ -110,6 +178,9 @@ async function createOwnedBandWithRetry(
     });
     if (!error && bandIdRaw != null) {
       return { ok: true, bandId: String(bandIdRaw), inviteToken: token };
+    }
+    if (isMissingCreateOwnedBandRpc(error)) {
+      return createOwnedBandDirectWithRetry(sb, userId, bandName);
     }
     if (!isInviteTokenConflictError(error)) {
       return { ok: false, error };
@@ -323,7 +394,7 @@ export async function registerAccountRemote(input: RegisterInput): Promise<Remot
     | null = null;
   if (input.isBand && input.bandName.trim()) {
     const trimmedBandName = input.bandName.trim();
-    const ownedCreate = await createOwnedBandWithRetry(sb, trimmedBandName);
+    const ownedCreate = await createOwnedBandWithRetry(sb, userId, trimmedBandName);
     if (!ownedCreate.ok) {
       return {
         ok: false,
@@ -370,7 +441,7 @@ export async function createOwnedBandRemote(bandName: string): Promise<RemoteLog
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
   }
 
-  const created = await createOwnedBandWithRetry(sb, name);
+  const created = await createOwnedBandWithRetry(sb, user.id, name);
   if (!created.ok) {
     return {
       ok: false,
