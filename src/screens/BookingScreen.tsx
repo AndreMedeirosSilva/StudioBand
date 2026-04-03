@@ -638,7 +638,7 @@ const styles = StyleSheet.create({
   },
   studioPrice: { fontSize: 14, fontWeight: '800', color: COLORS.accent },
   salaPill: {
-    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    backgroundColor: 'rgba(255, 190, 152, 0.12)',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 8,

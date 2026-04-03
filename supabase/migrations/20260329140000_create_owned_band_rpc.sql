@@ -26,14 +26,6 @@ begin
     raise exception 'empty_invite_token';
   end if;
 
-  if exists (
-    select 1 from public.bands
-    where primary_owner_user_id = auth.uid()
-    limit 1
-  ) then
-    raise exception 'already_has_owned_band';
-  end if;
-
   insert into public.bands (name, primary_owner_user_id, invite_token)
   values (trimmed_name, auth.uid(), trimmed_token)
   returning id into new_id;
@@ -46,4 +38,5 @@ end;
 $$;
 
 revoke all on function public.create_owned_band(text, text) from public;
+revoke all on function public.create_owned_band(text, text) from anon;
 grant execute on function public.create_owned_band(text, text) to authenticated;

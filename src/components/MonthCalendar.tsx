@@ -210,7 +210,7 @@ const styles = StyleSheet.create({
   },
   cellSelected: {
     borderColor: COLORS.accent,
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    backgroundColor: 'rgba(255, 190, 152, 0.15)',
     borderStyle: 'solid',
     borderWidth: 2,
   },

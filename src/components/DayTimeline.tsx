@@ -133,17 +133,17 @@ const styles = StyleSheet.create({
   segZBelow: { zIndex: 1 },
   segZAbove: { zIndex: 2 },
   segBooked: {
-    backgroundColor: 'rgba(52, 211, 153, 0.35)',
+    backgroundColor: 'rgba(92, 211, 176, 0.35)',
     borderWidth: 1,
     borderColor: COLORS.success,
   },
   segBlocked: {
-    backgroundColor: 'rgba(248, 113, 113, 0.3)',
+    backgroundColor: 'rgba(255, 122, 155, 0.3)',
     borderWidth: 1,
     borderColor: COLORS.danger,
   },
   segPreview: {
-    backgroundColor: 'rgba(245, 158, 11, 0.22)',
+    backgroundColor: 'rgba(255, 190, 152, 0.22)',
     borderWidth: 2,
     borderColor: COLORS.accent,
   },

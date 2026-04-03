@@ -273,7 +273,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     backgroundColor: COLORS.bg,
   },
-  chipOn: { borderColor: COLORS.accent, backgroundColor: 'rgba(245, 158, 11, 0.12)' },
+  chipOn: { borderColor: COLORS.accent, backgroundColor: 'rgba(255, 190, 152, 0.12)' },
   chipText: { color: COLORS.muted, fontSize: 15, fontWeight: '600' },
   chipTextOn: { color: COLORS.accent },
   label: {

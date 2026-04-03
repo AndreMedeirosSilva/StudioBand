@@ -49,7 +49,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     backgroundColor: COLORS.bgElevated,
   },
-  chipOn: { borderColor: COLORS.accent, backgroundColor: 'rgba(245, 158, 11, 0.15)' },
+  chipOn: { borderColor: COLORS.accent, backgroundColor: 'rgba(255, 190, 152, 0.15)' },
   chipText: { fontSize: 14, fontWeight: '700', color: COLORS.text },
   chipTextOn: { color: COLORS.accent },
 });

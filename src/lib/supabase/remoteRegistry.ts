@@ -28,6 +28,8 @@ export type RemoteLoginResult =
   | { ok: true; profile: PersistedProfile }
   | { ok: false; message: string };
 
+export type RemoteActionResult = { ok: true } | { ok: false; message: string };
+
 function mapAuthMessage(err: { message?: string } | null): string {
   const m = (err?.message ?? '').toLowerCase();
   if (m.includes('invalid login credentials') || m.includes('invalid_credentials')) {
@@ -500,6 +502,22 @@ export async function renameOwnedBandRemote(nextBandName: string, bandId?: strin
   if (!user) {
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
   }
+  if (bandId) {
+    const { error: adminErr } = await sb.rpc('admin_rename_band', { p_band_id: bandId, p_name: name });
+    if (!adminErr) {
+      const profile = await buildPersistedProfileForUser(user);
+      if (!profile) return { ok: false, message: 'Banda atualizada, mas falhou ao carregar o perfil.' };
+      return { ok: true, profile };
+    }
+    const m = (adminErr.message ?? '').toLowerCase();
+    const rpcMissing =
+      m.includes('admin_rename_band') && (m.includes('does not exist') || m.includes('schema cache') || m.includes('function'));
+    if (!rpcMissing) {
+      if (m.includes('not_admin')) return { ok: false, message: 'Apenas administradores podem editar esta banda.' };
+      if (m.includes('band_not_found')) return { ok: false, message: 'Banda não encontrada.' };
+      return { ok: false, message: mapDbError(adminErr.message) };
+    }
+  }
   const owned = bandId
     ? await sb
         .from('bands')
@@ -525,11 +543,100 @@ export async function renameOwnedBandRemote(nextBandName: string, bandId?: strin
   return { ok: true, profile };
 }
 
+export async function updateOwnedBandPhotoRemote(
+  photoUrl: string | null,
+  bandId?: string,
+): Promise<RemoteLoginResult> {
+  const sb = getSupabase();
+  const user = await resolveAuthUser(sb);
+  if (!user) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const normalized = photoUrl?.trim() ?? null;
+  if (bandId) {
+    const { error: adminErr } = await sb.rpc('admin_update_band_photo', {
+      p_band_id: bandId,
+      p_photo_url: normalized && /^https?:\/\//i.test(normalized) ? normalized : null,
+    });
+    if (!adminErr) {
+      const profile = await buildPersistedProfileForUser(user);
+      if (!profile) return { ok: false, message: 'Foto atualizada, mas falhou ao carregar o perfil.' };
+      return { ok: true, profile };
+    }
+    const m = (adminErr.message ?? '').toLowerCase();
+    const rpcMissing =
+      m.includes('admin_update_band_photo') &&
+      (m.includes('does not exist') || m.includes('schema cache') || m.includes('function'));
+    if (!rpcMissing) {
+      if (m.includes('not_admin')) return { ok: false, message: 'Apenas administradores podem editar a foto desta banda.' };
+      if (m.includes('band_not_found')) return { ok: false, message: 'Banda não encontrada.' };
+      if (m.includes('photo_url') && (m.includes('does not exist') || m.includes('schema cache'))) {
+        return {
+          ok: false,
+          message: 'A coluna photo_url ainda não existe no Supabase. Aplique a migration SQL de foto da banda e tente novamente.',
+        };
+      }
+      return { ok: false, message: mapDbError(adminErr.message) };
+    }
+  }
+  const owned = bandId
+    ? await sb
+        .from('bands')
+        .select('id')
+        .eq('id', bandId)
+        .eq('primary_owner_user_id', user.id)
+        .maybeSingle()
+        .then(({ data, error }) => (error || !data ? null : data))
+    : await getOwnedBandForUserId(sb, user.id);
+  if (!owned?.id) {
+    return { ok: false, message: 'Você ainda não tem banda como administrador.' };
+  }
+  const { error } = await sb
+    .from('bands')
+    .update({ photo_url: normalized && /^https?:\/\//i.test(normalized) ? normalized : null })
+    .eq('id', owned.id)
+    .eq('primary_owner_user_id', user.id);
+  if (error) {
+    const msg = (error.message ?? '').toLowerCase();
+    if (msg.includes('photo_url') && (msg.includes('does not exist') || msg.includes('schema cache'))) {
+      return {
+        ok: false,
+        message:
+          'A coluna photo_url ainda não existe no Supabase. Aplique a migration SQL de foto da banda e tente novamente.',
+      };
+    }
+    return { ok: false, message: mapDbError(error.message) };
+  }
+  const profile = await buildPersistedProfileForUser(user);
+  if (!profile) return { ok: false, message: 'Foto atualizada, mas falhou ao carregar o perfil.' };
+  return { ok: true, profile };
+}
+
 export async function regenerateOwnedBandInviteRemote(bandId?: string): Promise<RemoteLoginResult> {
   const sb = getSupabase();
   const user = await resolveAuthUser(sb);
   if (!user) {
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  if (bandId) {
+    const { data: adminToken, error: adminErr } = await sb.rpc('admin_regenerate_band_invite', { p_band_id: bandId });
+    if (!adminErr) {
+      const profile = await buildPersistedProfileForUser(user);
+      if (!profile) return { ok: false, message: 'Convite atualizado, mas falhou ao carregar o perfil.' };
+      return {
+        ok: true,
+        profile: { ...profile, ownedInviteToken: typeof adminToken === 'string' ? adminToken : profile.ownedInviteToken },
+      };
+    }
+    const m = (adminErr.message ?? '').toLowerCase();
+    const rpcMissing =
+      m.includes('admin_regenerate_band_invite') &&
+      (m.includes('does not exist') || m.includes('schema cache') || m.includes('function'));
+    if (!rpcMissing) {
+      if (m.includes('not_admin')) return { ok: false, message: 'Apenas administradores podem gerar novo convite.' };
+      if (m.includes('band_not_found')) return { ok: false, message: 'Banda não encontrada.' };
+      return { ok: false, message: mapDbError(adminErr.message) };
+    }
   }
   const owned = bandId
     ? await sb
@@ -567,77 +674,101 @@ export async function regenerateOwnedBandInviteRemote(bandId?: string): Promise<
 }
 
 export async function deleteOwnedBandRemote(bandId?: string): Promise<RemoteLoginResult> {
-  const sb = getSupabase();
-  const user = await resolveAuthUser(sb);
-  if (!user) {
-    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
-  }
-  const owned = bandId
-    ? await sb
-        .from('bands')
-        .select('id, name, invite_token')
-        .eq('id', bandId)
-        .eq('primary_owner_user_id', user.id)
-        .maybeSingle()
-        .then(({ data, error }) => (error || !data ? null : data))
-    : await getOwnedBandForUserId(sb, user.id);
-  if (!owned) {
-    return { ok: false, message: 'Você ainda não tem banda como administrador.' };
-  }
-
-  const targetBandId = owned.id;
-
-  const { error: rpcErr } = await withTimeout(
-    Promise.resolve(sb.rpc('delete_owned_band', { p_band_id: targetBandId })),
-    'Tempo esgotado ao excluir banda no Supabase. Tente novamente.',
-  );
-  if (!rpcErr) {
-    const { data: stillThere, error: verifyErr } = await sb
-      .from('bands')
-      .select('id')
-      .eq('id', targetBandId)
-      .eq('primary_owner_user_id', user.id)
-      .maybeSingle();
-    if (!verifyErr && !stillThere) {
-      const profile = await buildPersistedProfileForUser(user);
-      if (!profile) return { ok: false, message: 'Banda removida, mas falhou ao carregar o perfil.' };
-      return { ok: true, profile };
+  try {
+    const sb = getSupabase();
+    const user = await resolveAuthUser(sb);
+    if (!user) {
+      return { ok: false, message: 'Sessão inválida. Entre de novo.' };
     }
-  }
+    if (bandId) {
+      const { error: adminErr } = await withTimeout(
+        Promise.resolve(sb.rpc('admin_delete_band', { p_band_id: bandId })),
+        'Tempo esgotado ao excluir banda no Supabase. Tente novamente.',
+      );
+      if (!adminErr) {
+        const profile = await buildPersistedProfileForUser(user);
+        if (!profile) return { ok: false, message: 'Banda removida, mas falhou ao carregar o perfil.' };
+        return { ok: true, profile };
+      }
+      const m = (adminErr.message ?? '').toLowerCase();
+      const rpcMissing =
+        m.includes('admin_delete_band') && (m.includes('does not exist') || m.includes('schema cache') || m.includes('function'));
+      if (!rpcMissing) {
+        if (m.includes('not_admin')) return { ok: false, message: 'Apenas administradores podem excluir esta banda.' };
+        if (m.includes('band_not_found')) return { ok: false, message: 'Banda não encontrada.' };
+        return { ok: false, message: mapDbError(adminErr.message) };
+      }
+    }
+    const owned = bandId
+      ? await sb
+          .from('bands')
+          .select('id, name, invite_token')
+          .eq('id', bandId)
+          .eq('primary_owner_user_id', user.id)
+          .maybeSingle()
+          .then(({ data, error }) => (error || !data ? null : data))
+      : await getOwnedBandForUserId(sb, user.id);
+    if (!owned) {
+      return { ok: false, message: 'Você ainda não tem banda como administrador.' };
+    }
 
-  const rpcMsg = (rpcErr?.message ?? '').toLowerCase();
-  const rpcMissing =
-    rpcMsg.includes('delete_owned_band') &&
-    (rpcMsg.includes('does not exist') || rpcMsg.includes('schema cache') || rpcMsg.includes('function'));
+    const targetBandId = owned.id;
 
-  const { data: deletedRows, error: bandErr } = await withTimeout(
-    Promise.resolve(
-      sb.from('bands').delete().eq('id', targetBandId).eq('primary_owner_user_id', user.id).select('id'),
-    ),
-    'Tempo esgotado ao excluir banda no Supabase. Tente novamente.',
-  );
-  if (bandErr) {
-    const m = (bandErr.message ?? '').toLowerCase();
-    if (rpcMissing || m.includes('rls') || m.includes('permission denied')) {
+    const { error: rpcErr } = await withTimeout(
+      Promise.resolve(sb.rpc('delete_owned_band', { p_band_id: targetBandId })),
+      'Tempo esgotado ao excluir banda no Supabase. Tente novamente.',
+    );
+    if (!rpcErr) {
+      const { data: stillThere, error: verifyErr } = await sb
+        .from('bands')
+        .select('id')
+        .eq('id', targetBandId)
+        .eq('primary_owner_user_id', user.id)
+        .maybeSingle();
+      if (!verifyErr && !stillThere) {
+        const profile = await buildPersistedProfileForUser(user);
+        if (!profile) return { ok: false, message: 'Banda removida, mas falhou ao carregar o perfil.' };
+        return { ok: true, profile };
+      }
+    }
+
+    const rpcMsg = (rpcErr?.message ?? '').toLowerCase();
+    const rpcMissing =
+      rpcMsg.includes('delete_owned_band') &&
+      (rpcMsg.includes('does not exist') || rpcMsg.includes('schema cache') || rpcMsg.includes('function'));
+
+    const { data: deletedRows, error: bandErr } = await withTimeout(
+      Promise.resolve(
+        sb.from('bands').delete().eq('id', targetBandId).eq('primary_owner_user_id', user.id).select('id'),
+      ),
+      'Tempo esgotado ao excluir banda no Supabase. Tente novamente.',
+    );
+    if (bandErr) {
+      const m = (bandErr.message ?? '').toLowerCase();
+      if (rpcMissing || m.includes('rls') || m.includes('permission denied')) {
+        return {
+          ok: false,
+          message:
+            'Exclusão bloqueada no Supabase (RLS). Crie a RPC delete_owned_band no SQL Editor ou adicione policy DELETE em bands para o owner.',
+        };
+      }
+      return { ok: false, message: mapDbError(bandErr.message) };
+    }
+    if (!deletedRows || deletedRows.length === 0) {
       return {
         ok: false,
         message:
-          'Exclusão bloqueada no Supabase (RLS). Crie a RPC delete_owned_band no SQL Editor ou adicione policy DELETE em bands para o owner.',
+          'A banda não foi excluída (sem permissão do owner ou registro não encontrado). Verifique se está logado com a conta dona da banda.',
       };
     }
-    return { ok: false, message: mapDbError(bandErr.message) };
-  }
-  if (!deletedRows || deletedRows.length === 0) {
-    return {
-      ok: false,
-      message:
-        'A banda não foi excluída (sem permissão do owner ou registro não encontrado). Verifique se está logado com a conta dona da banda.',
-    };
-  }
 
-  const profile = await buildPersistedProfileForUser(user);
-  if (!profile) return { ok: false, message: 'Banda removida, mas falhou ao carregar o perfil.' };
-  return { ok: true, profile };
+    const profile = await buildPersistedProfileForUser(user);
+    if (!profile) return { ok: false, message: 'Banda removida, mas falhou ao carregar o perfil.' };
+    return { ok: true, profile };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Erro inesperado ao excluir banda.';
+    return { ok: false, message };
+  }
 }
 
 export async function joinBandWithInviteRemote(userId: string, inviteToken: string): Promise<RemoteLoginResult> {
@@ -690,15 +821,34 @@ export async function getInviteUrlForOwnedBandRemote(ownerBandId: string): Promi
 
 export async function listBandsDetailForUserRemote(
   userId: string,
-): Promise<{ id: string; name: string; role: string; canManage: boolean }[]> {
+): Promise<{ id: string; name: string; role: string; canManage: boolean; inviteToken: string | null; photoUrl: string | null }[]> {
   const sb = getSupabase();
   const { data, error } = await sb
     .from('band_memberships')
-    .select('role, bands ( id, name, primary_owner_user_id )')
+    .select('role, bands ( id, name, primary_owner_user_id, invite_token, photo_url )')
     .eq('user_id', userId);
-  if (error || !data) return [];
-  type R = { role: string; bands: { id: string; name: string; primary_owner_user_id: string } | null };
-  return (data as unknown as R[])
+  const missingPhotoColumn =
+    !!error &&
+    (error.message ?? '').toLowerCase().includes('photo_url') &&
+    ((error.message ?? '').toLowerCase().includes('does not exist') ||
+      (error.message ?? '').toLowerCase().includes('schema cache'));
+  const fallback = missingPhotoColumn
+    ? await sb.from('band_memberships').select('role, bands ( id, name, primary_owner_user_id, invite_token )').eq('user_id', userId)
+    : null;
+  const rawData = missingPhotoColumn ? fallback?.data : data;
+  const rawError = missingPhotoColumn ? fallback?.error : error;
+  if (rawError || !rawData) return [];
+  type R = {
+    role: string;
+    bands: {
+      id: string;
+      name: string;
+      primary_owner_user_id: string;
+      invite_token: string | null;
+      photo_url?: string | null;
+    } | null;
+  };
+  return (rawData as unknown as R[])
     .map((row) => {
       const name = row.bands?.name;
       const id = row.bands?.id;
@@ -708,10 +858,228 @@ export async function listBandsDetailForUserRemote(
         id,
         name,
         role: row.role === 'admin' ? 'Administrador' : 'Membro',
-        canManage: ownerId === userId,
+        canManage: row.role === 'admin' || ownerId === userId,
+        inviteToken: row.role === 'admin' || ownerId === userId ? row.bands?.invite_token?.trim() || null : null,
+        photoUrl: row.bands?.photo_url?.trim() || null,
       };
     })
-    .filter((x): x is { id: string; name: string; role: string; canManage: boolean } => x !== null);
+    .filter(
+      (
+        x,
+      ): x is { id: string; name: string; role: string; canManage: boolean; inviteToken: string | null; photoUrl: string | null } =>
+        x !== null,
+    );
+}
+
+export async function listOwnedBandsForUserRemote(
+  userId: string,
+): Promise<{ id: string; name: string; inviteToken: string | null; photoUrl: string | null }[]> {
+  const sb = getSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user || user.id !== userId) return [];
+
+  const { data, error } = await sb
+    .from('band_memberships')
+    .select('bands ( id, name, invite_token, photo_url, created_at )')
+    .eq('user_id', userId)
+    .eq('role', 'admin');
+  const missingPhotoColumn =
+    !!error &&
+    (error.message ?? '').toLowerCase().includes('photo_url') &&
+    ((error.message ?? '').toLowerCase().includes('does not exist') ||
+      (error.message ?? '').toLowerCase().includes('schema cache'));
+  const fallback = missingPhotoColumn
+    ? await sb
+        .from('band_memberships')
+        .select('bands ( id, name, invite_token, created_at )')
+        .eq('user_id', userId)
+        .eq('role', 'admin')
+    : null;
+  const rawData = missingPhotoColumn ? fallback?.data : data;
+  const rawError = missingPhotoColumn ? fallback?.error : error;
+
+  if (rawError || !rawData) return [];
+  type MRow = {
+    bands: { id: string; name: string; invite_token: string | null; photo_url?: string | null; created_at?: string | null } | null;
+  };
+  return (rawData as unknown as MRow[])
+    .map((row) => row.bands)
+    .filter((b): b is NonNullable<MRow['bands']> => !!b)
+    .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''))
+    .map((b) => ({
+      id: b.id,
+      name: b.name,
+      inviteToken: b.invite_token?.trim() || null,
+      photoUrl: b.photo_url?.trim() || null,
+    }));
+}
+
+export async function listBandMembersForOwnerRemote(
+  userId: string,
+  bandId: string,
+): Promise<{ userId: string; displayName: string | null; email: string | null; role: 'admin' | 'member'; joinedAt: string | null }[]> {
+  const sb = getSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user || user.id !== userId) return [];
+
+  const { data, error } = await sb.rpc('list_band_members_for_admin', { p_band_id: bandId });
+  const adminMsg = (error?.message ?? '').toLowerCase();
+  const missingAdminRpc =
+    !!error &&
+    adminMsg.includes('list_band_members_for_admin') &&
+    (adminMsg.includes('does not exist') || adminMsg.includes('schema cache') || adminMsg.includes('function'));
+  const notAdmin = !!error && adminMsg.includes('not_admin');
+  const memberCall = notAdmin ? await sb.rpc('list_band_members_for_member', { p_band_id: bandId }) : null;
+  const ownerFallback = missingAdminRpc ? await sb.rpc('list_band_members_for_owner', { p_band_id: bandId }) : null;
+  const rawData = missingAdminRpc ? ownerFallback?.data : notAdmin ? memberCall?.data : data;
+  const rawError = missingAdminRpc ? ownerFallback?.error : notAdmin ? memberCall?.error : error;
+  if (rawError || !rawData) return [];
+
+  type RpcRow = {
+    user_id: string;
+    role: 'admin' | 'member';
+    joined_at: string | null;
+    display_name: string | null;
+    email: string | null;
+  };
+
+  return (rawData as unknown as RpcRow[]).map((row) => ({
+    userId: row.user_id,
+    displayName: row.display_name ?? null,
+    email: row.email ?? null,
+    role: row.role === 'admin' ? 'admin' : 'member',
+    joinedAt: row.joined_at ?? null,
+  }));
+}
+
+export async function demoteBandAdminForOwnerRemote(
+  userId: string,
+  bandId: string,
+  memberUserId: string,
+): Promise<RemoteActionResult> {
+  const sb = getSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user || user.id !== userId) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const { error } = await sb.rpc('set_band_member_role_for_admin', {
+    p_band_id: bandId,
+    p_user_id: memberUserId,
+    p_role: 'member',
+  });
+  const m0 = (error?.message ?? '').toLowerCase();
+  const rpcMissing =
+    !!error &&
+    m0.includes('set_band_member_role_for_admin') &&
+    (m0.includes('does not exist') || m0.includes('schema cache') || m0.includes('function'));
+  const fallback = rpcMissing
+    ? await sb.rpc('set_band_member_role_for_owner', { p_band_id: bandId, p_user_id: memberUserId, p_role: 'member' })
+    : null;
+  const rawError = rpcMissing ? fallback?.error : error;
+  if (!rawError) return { ok: true };
+  const m = (rawError.message ?? '').toLowerCase();
+  if (m.includes('not_owner')) return { ok: false, message: 'Somente o criador da banda pode retirar privilégios.' };
+  if (m.includes('not_admin')) return { ok: false, message: 'Somente administradores podem alterar privilégios.' };
+  if (m.includes('owner_role_immutable')) return { ok: false, message: 'O criador da banda não pode perder privilégios.' };
+  if (m.includes('member_not_found')) return { ok: false, message: 'Integrante não encontrado nesta banda.' };
+  return { ok: false, message: mapDbError(rawError.message) };
+}
+
+export async function removeBandMemberForOwnerRemote(
+  userId: string,
+  bandId: string,
+  memberUserId: string,
+): Promise<RemoteActionResult> {
+  const sb = getSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user || user.id !== userId) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const { error } = await sb.rpc('remove_band_member_for_admin', {
+    p_band_id: bandId,
+    p_user_id: memberUserId,
+  });
+  const m0 = (error?.message ?? '').toLowerCase();
+  const rpcMissing =
+    !!error &&
+    m0.includes('remove_band_member_for_admin') &&
+    (m0.includes('does not exist') || m0.includes('schema cache') || m0.includes('function'));
+  const fallback = rpcMissing
+    ? await sb.rpc('remove_band_member_for_owner', { p_band_id: bandId, p_user_id: memberUserId })
+    : null;
+  const rawError = rpcMissing ? fallback?.error : error;
+  if (!rawError) return { ok: true };
+  const m = (rawError.message ?? '').toLowerCase();
+  if (m.includes('not_owner')) return { ok: false, message: 'Somente o dono da banda pode remover integrantes.' };
+  if (m.includes('not_admin')) return { ok: false, message: 'Somente administradores podem remover integrantes.' };
+  if (m.includes('cannot_remove_owner')) return { ok: false, message: 'O dono da banda não pode ser removido.' };
+  if (m.includes('member_not_found')) return { ok: false, message: 'Integrante não encontrado nesta banda.' };
+  return { ok: false, message: mapDbError(rawError.message) };
+}
+
+export async function promoteBandMemberForOwnerRemote(
+  userId: string,
+  bandId: string,
+  memberUserId: string,
+): Promise<RemoteActionResult> {
+  const sb = getSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user || user.id !== userId) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const { error } = await sb.rpc('set_band_member_role_for_admin', {
+    p_band_id: bandId,
+    p_user_id: memberUserId,
+    p_role: 'admin',
+  });
+  const m0 = (error?.message ?? '').toLowerCase();
+  const rpcMissing =
+    !!error &&
+    m0.includes('set_band_member_role_for_admin') &&
+    (m0.includes('does not exist') || m0.includes('schema cache') || m0.includes('function'));
+  const fallback = rpcMissing
+    ? await sb.rpc('set_band_member_role_for_owner', { p_band_id: bandId, p_user_id: memberUserId, p_role: 'admin' })
+    : null;
+  const rawError = rpcMissing ? fallback?.error : error;
+  if (!rawError) return { ok: true };
+  const m = (rawError.message ?? '').toLowerCase();
+  if (m.includes('not_owner')) return { ok: false, message: 'Somente o dono da banda pode promover integrantes.' };
+  if (m.includes('not_admin')) return { ok: false, message: 'Somente administradores podem promover integrantes.' };
+  if (m.includes('owner_role_immutable')) return { ok: false, message: 'O dono já é administrador principal.' };
+  if (m.includes('member_not_found')) return { ok: false, message: 'Integrante não encontrado nesta banda.' };
+  return { ok: false, message: mapDbError(rawError.message) };
+}
+
+export async function leaveBandRemote(userId: string, bandId: string): Promise<RemoteLoginResult> {
+  const sb = getSupabase();
+  const user = await resolveAuthUser(sb);
+  if (!user || user.id !== userId) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const { error } = await sb.rpc('leave_band', { p_band_id: bandId });
+  if (error) {
+    const m = (error.message ?? '').toLowerCase();
+    if (m.includes('owner_cannot_leave')) {
+      return { ok: false, message: 'O dono não pode sair da própria banda. Exclua a banda ou transfira a gestão.' };
+    }
+    if (m.includes('not_member')) {
+      return { ok: false, message: 'Você não faz parte desta banda.' };
+    }
+    return { ok: false, message: mapDbError(error.message) };
+  }
+  const profile = await buildPersistedProfileForUser(user);
+  if (!profile) return { ok: false, message: 'Você saiu da banda, mas falhou ao atualizar o perfil.' };
+  return { ok: true, profile };
 }
 
 export async function peekInviteBandNameRemote(token: string): Promise<string | null> {

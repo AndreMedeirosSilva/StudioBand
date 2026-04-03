@@ -154,13 +154,12 @@ with check (primary_owner_user_id = auth.uid());
 create policy bands_update_owner on public.bands for update
 using (primary_owner_user_id = auth.uid());
 
+create policy bands_delete_owner on public.bands for delete
+using (primary_owner_user_id = auth.uid());
+
 -- memberships
 create policy memberships_select on public.band_memberships for select using (
   user_id = auth.uid()
-  or exists (
-    select 1 from public.bands b
-    where b.id = band_id and b.primary_owner_user_id = auth.uid()
-  )
 );
 
 create policy memberships_insert_admin on public.band_memberships for insert
