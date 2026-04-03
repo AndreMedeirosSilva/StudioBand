@@ -377,8 +377,8 @@ const styles = StyleSheet.create({
     width: 400,
     flexShrink: 0,
     borderLeftWidth: 1,
-    borderLeftColor: COLORS.border,
-    backgroundColor: COLORS.bg,
+    borderLeftColor: 'rgba(255,255,255,0.06)',
+    backgroundColor: 'rgba(10, 11, 20, 0.86)',
     ...Platform.select({
       web: {
         maxWidth: '40%',
@@ -406,7 +406,7 @@ const styles = StyleSheet.create({
   },
   heroScrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(8, 6, 14, 0.52)',
+    backgroundColor: 'rgba(6, 8, 20, 0.56)',
     zIndex: 0,
   },
   heroTop: {
@@ -499,16 +499,17 @@ const styles = StyleSheet.create({
   },
   sheet: {
     flex: 1,
-    backgroundColor: COLORS.bg,
+    backgroundColor: 'rgba(10, 11, 20, 0.92)',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     borderWidth: 1,
     borderBottomWidth: 0,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.08)',
     minHeight: 400,
     ...Platform.select({
       web: {
-        boxShadow: '0 -12px 40px rgba(0,0,0,0.35)',
+        boxShadow: '0 -12px 40px rgba(0,0,0,0.42)',
+        backdropFilter: 'blur(8px)',
       },
       default: {
         shadowColor: '#000',
@@ -542,11 +543,17 @@ const styles = StyleSheet.create({
     marginBottom: 22,
   },
   card: {
-    backgroundColor: COLORS.card,
+    backgroundColor: 'rgba(26, 34, 54, 0.9)',
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: 'rgba(255,255,255,0.08)',
     padding: 22,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 12px 28px rgba(0,0,0,0.28)',
+      },
+      default: {},
+    }),
   },
   label: {
     fontSize: 12,
@@ -558,9 +565,9 @@ const styles = StyleSheet.create({
   labelSpaced: { marginTop: 18 },
   input: {
     marginTop: 10,
-    backgroundColor: COLORS.bg,
+    backgroundColor: 'rgba(8, 11, 22, 0.74)',
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: 'rgba(255,255,255,0.12)',
     borderRadius: 14,
     paddingHorizontal: 16,
     paddingVertical: Platform.select({ ios: 15, default: 13 }),
@@ -574,9 +581,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 14,
     borderRadius: 12,
-    backgroundColor: COLORS.bgElevated,
+    backgroundColor: 'rgba(18, 22, 38, 0.95)',
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: 'rgba(255,255,255,0.12)',
   },
   eyeTxt: { color: COLORS.text, fontSize: 13, fontWeight: '700' },
   forgotWrap: { alignSelf: 'flex-end', marginTop: 14, paddingVertical: 4 },
@@ -589,7 +596,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     ...Platform.select({
       web: {
-        boxShadow: '0 8px 24px rgba(245, 158, 11, 0.28)',
+        boxShadow: '0 8px 24px rgba(255, 190, 152, 0.28)',
       },
       default: {
         shadowColor: COLORS.accent,

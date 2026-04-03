@@ -387,7 +387,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.card,
     overflow: 'hidden',
   },
-  roomPickCardOn: { borderColor: COLORS.accent, backgroundColor: 'rgba(245, 158, 11, 0.08)' },
+  roomPickCardOn: { borderColor: COLORS.accent, backgroundColor: 'rgba(255, 190, 152, 0.08)' },
   roomPickCapSlot: {
     width: '100%',
     minHeight: 88,

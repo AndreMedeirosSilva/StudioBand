@@ -4,6 +4,7 @@ import {
   Text,
   TextInput,
   Pressable,
+  Image,
   StyleSheet,
   useWindowDimensions,
   ScrollView,
@@ -23,12 +24,18 @@ import type { UserProfile } from '../navigation/AppNavigator';
 import {
   createOwnedBand,
   deleteOwnedBand,
-  getInviteUrlForOwnedBand,
   joinBandWithInvite,
+  leaveBand,
+  demoteBandAdminForOwner,
+  listBandMembersForOwner,
   listBandsDetailForUser,
+  listOwnedBandsForUser,
   peekInviteBandName,
+  promoteBandMemberForOwner,
   regenerateOwnedBandInvite,
+  removeBandMemberForOwner,
   renameOwnedBand,
+  updateOwnedBandPhoto,
 } from '../registry/localRegistry';
 
 type Props = {
@@ -51,6 +58,7 @@ const MOCK_ACTIVITY_ROWS = [
   { when: '2 novos', where: 'Mensagens de estúdios (demo)', tag: 'Inbox', tone: 'muted' as const },
 ];
 
+
 export function HomeScreen({
   profile,
   onBook,
@@ -64,42 +72,65 @@ export function HomeScreen({
   const { width } = useWindowDimensions();
   const pad = Math.min(24, Math.max(16, width * 0.05));
 
-  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
-  const [bandRows, setBandRows] = useState<{ id: string; name: string; role: string; canManage: boolean }[]>([]);
+  const [ownedBands, setOwnedBands] = useState<
+    { id: string; name: string; inviteToken: string | null; photoUrl: string | null }[]
+  >([]);
+  const [activeOwnedBandId, setActiveOwnedBandId] = useState<string | null>(null);
+  const [activeBandMenu, setActiveBandMenu] = useState<'convites' | 'admin'>('convites');
+  const [bandRows, setBandRows] = useState<
+    { id: string; name: string; role: string; canManage: boolean; inviteToken: string | null; photoUrl: string | null }[]
+  >([]);
+  const [membersByBand, setMembersByBand] = useState<
+    Record<string, { userId: string; displayName: string | null; email: string | null; role: 'admin' | 'member'; joinedAt: string | null }[]>
+  >({});
+  const [membersLoadingByBand, setMembersLoadingByBand] = useState<Record<string, boolean>>({});
+  const [expandedMemberBands, setExpandedMemberBands] = useState<Record<string, boolean>>({});
   const [joinCode, setJoinCode] = useState('');
   const [joinBandPreview, setJoinBandPreview] = useState<string | null>(null);
   const [joinBusy, setJoinBusy] = useState(false);
   const [bandModalOpen, setBandModalOpen] = useState(false);
   const [newBandName, setNewBandName] = useState('');
+  const [newBandPhotoUrl, setNewBandPhotoUrl] = useState('');
   const [bandModalBusy, setBandModalBusy] = useState(false);
   const [bandEditModalOpen, setBandEditModalOpen] = useState(false);
   const [editBandName, setEditBandName] = useState('');
+  const [editBandPhotoUrl, setEditBandPhotoUrl] = useState('');
   const [editBandId, setEditBandId] = useState<string | null>(null);
   const [bandCrudBusy, setBandCrudBusy] = useState(false);
 
   useEffect(() => {
-    if (!profile.ownedBandId) {
-      setInviteUrl(null);
-      return;
-    }
-    if (profile.ownedInviteToken) {
-      setInviteUrl(buildInviteUrl(profile.ownedInviteToken));
-      return;
-    }
-    void getInviteUrlForOwnedBand(profile.ownedBandId).then(setInviteUrl);
-  }, [profile.ownedBandId, profile.ownedInviteToken]);
-
-  useEffect(() => {
     if (!profile.userId) {
       setBandRows([]);
+      setOwnedBands([]);
+      setActiveOwnedBandId(null);
+      setMembersByBand({});
+      setExpandedMemberBands({});
+      setMembersLoadingByBand({});
       return;
     }
-    void listBandsDetailForUser(profile.userId).then(setBandRows);
-  }, [profile]);
+    void (async () => {
+      const [rows, owned] = await Promise.all([
+        listBandsDetailForUser(profile.userId),
+        listOwnedBandsForUser(profile.userId),
+      ]);
+      setBandRows(rows);
+      setOwnedBands(owned);
+      if (owned.length === 0) {
+        setActiveOwnedBandId(null);
+        return;
+      }
+      setActiveOwnedBandId((prev) => {
+        if (prev && owned.some((b) => b.id === prev)) return prev;
+        if (profile.ownedBandId && owned.some((b) => b.id === profile.ownedBandId)) return profile.ownedBandId;
+        return owned[0].id;
+      });
+    })();
+  }, [profile.userId, profile.ownedBandId]);
 
   useEffect(() => {
     setEditBandName(profile.ownedBandName ?? '');
     setEditBandId(profile.ownedBandId ?? null);
+    setEditBandPhotoUrl('');
   }, [profile.ownedBandId, profile.ownedBandName]);
 
   useEffect(() => {
@@ -121,6 +152,55 @@ export function HomeScreen({
     return () => clearTimeout(id);
   }, [joinCode]);
 
+  const refreshBandData = useCallback(async () => {
+    if (!profile.userId) return;
+    const [rows, owned] = await Promise.all([listBandsDetailForUser(profile.userId), listOwnedBandsForUser(profile.userId)]);
+    setBandRows(rows);
+    setOwnedBands(owned);
+    if (owned.length === 0) {
+      setActiveOwnedBandId(null);
+      return;
+    }
+    setActiveOwnedBandId((prev) => (prev && owned.some((b) => b.id === prev) ? prev : owned[0].id));
+  }, [profile.userId]);
+
+  const normalizePhotoUrl = useCallback((value: string): string | null => {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    return null;
+  }, []);
+
+  const saveBandPhoto = useCallback(
+    async (bandId: string, rawUrl: string) => {
+      if (!profile.userId) return { ok: false as const, message: 'Sessão inválida. Entre de novo.' };
+      const normalized = normalizePhotoUrl(rawUrl);
+      const res = await updateOwnedBandPhoto(profile.userId, normalized, bandId);
+      if (res.ok) {
+        onProfileUpdate(res.profile);
+        await refreshBandData();
+      }
+      return res;
+    },
+    [normalizePhotoUrl, onProfileUpdate, profile.userId, refreshBandData],
+  );
+
+  const toggleBandMembers = useCallback(
+    async (bandId: string) => {
+      const nextOpen = !expandedMemberBands[bandId];
+      setExpandedMemberBands((prev) => ({ ...prev, [bandId]: nextOpen }));
+      if (!nextOpen || membersByBand[bandId] || !profile.userId) return;
+      setMembersLoadingByBand((prev) => ({ ...prev, [bandId]: true }));
+      try {
+        const rows = await listBandMembersForOwner(profile.userId, bandId);
+        setMembersByBand((prev) => ({ ...prev, [bandId]: rows }));
+      } finally {
+        setMembersLoadingByBand((prev) => ({ ...prev, [bandId]: false }));
+      }
+    },
+    [expandedMemberBands, membersByBand, profile.userId],
+  );
+
   const submitCreateBand = useCallback(async () => {
     const name = newBandName.trim();
     if (!name) {
@@ -139,8 +219,19 @@ export function HomeScreen({
         return;
       }
       onProfileUpdate(res.profile);
+      await refreshBandData();
+      if (res.profile.ownedBandId) {
+        setActiveOwnedBandId(res.profile.ownedBandId);
+        if (newBandPhotoUrl.trim()) {
+          const photoRes = await saveBandPhoto(res.profile.ownedBandId, newBandPhotoUrl);
+          if (!photoRes.ok) {
+            Alert.alert('Banda', `Banda criada, mas a foto não foi salva: ${photoRes.message}`);
+          }
+        }
+      }
       setBandModalOpen(false);
       setNewBandName('');
+      setNewBandPhotoUrl('');
       const token = res.profile.ownedInviteToken;
       const nome = res.profile.ownedBandName ?? newBandName.trim();
       Alert.alert(
@@ -152,7 +243,7 @@ export function HomeScreen({
     } finally {
       setBandModalBusy(false);
     }
-  }, [newBandName, profile.userId, onProfileUpdate]);
+  }, [newBandName, newBandPhotoUrl, profile.userId, onProfileUpdate, refreshBandData, saveBandPhoto]);
 
   const applyJoinBand = useCallback(async () => {
     const code = joinCode.trim();
@@ -172,17 +263,19 @@ export function HomeScreen({
         return;
       }
       onProfileUpdate(res.profile);
+      await refreshBandData();
       setJoinCode('');
       setJoinBandPreview(null);
       Alert.alert('Banda', 'Você entrou na banda.');
     } finally {
       setJoinBusy(false);
     }
-  }, [joinCode, profile.userId, onProfileUpdate]);
+  }, [joinCode, profile.userId, onProfileUpdate, refreshBandData]);
 
-  const openEditBandModal = useCallback((bandId: string, bandName: string) => {
+  const openEditBandModal = useCallback((bandId: string, bandName: string, bandPhotoUrl: string | null) => {
     setEditBandId(bandId);
     setEditBandName(bandName);
+    setEditBandPhotoUrl(bandPhotoUrl ?? '');
     setBandEditModalOpen(true);
   }, []);
 
@@ -199,18 +292,26 @@ export function HomeScreen({
     if (!profile.userId) return;
     setBandCrudBusy(true);
     try {
-      const res = await renameOwnedBand(profile.userId, name, editBandId);
-      if (!res.ok) {
-        Alert.alert('Banda', res.message);
+      const renameRes = await renameOwnedBand(profile.userId, name, editBandId);
+      if (!renameRes.ok) {
+        Alert.alert('Banda', renameRes.message);
         return;
       }
-      onProfileUpdate(res.profile);
+      const photoRes = await updateOwnedBandPhoto(profile.userId, normalizePhotoUrl(editBandPhotoUrl), editBandId);
+      if (!photoRes.ok) {
+        onProfileUpdate(renameRes.profile);
+        await refreshBandData();
+        Alert.alert('Banda', `Nome salvo, mas a foto não foi atualizada: ${photoRes.message}`);
+        return;
+      }
+      onProfileUpdate(photoRes.profile);
+      await refreshBandData();
       setBandEditModalOpen(false);
-      Alert.alert('Banda', 'Nome atualizado com sucesso.');
+      Alert.alert('Banda', 'Nome e foto atualizados com sucesso.');
     } finally {
       setBandCrudBusy(false);
     }
-  }, [editBandId, editBandName, onProfileUpdate, profile.userId]);
+  }, [editBandId, editBandName, editBandPhotoUrl, normalizePhotoUrl, onProfileUpdate, profile.userId, refreshBandData]);
 
   const applyRegenerateInvite = useCallback(async (bandId: string) => {
     if (!profile.userId) return;
@@ -222,65 +323,229 @@ export function HomeScreen({
         return;
       }
       onProfileUpdate(res.profile);
+      await refreshBandData();
+      setActiveOwnedBandId(bandId);
       Alert.alert('Convite', 'Novo código de convite gerado.');
     } finally {
       setBandCrudBusy(false);
     }
-  }, [onProfileUpdate, profile.userId]);
+  }, [onProfileUpdate, profile.userId, refreshBandData]);
 
-  const applyDeleteBand = useCallback((bandId: string, bandName: string) => {
-    if (!profile.userId) return;
-    Alert.alert(
-      'Excluir banda',
-      `Esta ação remove a banda “${bandName}” e as associações de membros. Deseja continuar?`,
-      [
+  const runDeleteBand = useCallback(
+    (bandId: string) => {
+      if (!profile.userId) return;
+      setBandCrudBusy(true);
+      void deleteOwnedBand(profile.userId, bandId)
+        .then(async (res) => {
+          if (!res.ok) {
+            Alert.alert('Banda', res.message);
+            return;
+          }
+          setBandRows((prev) => prev.filter((row) => row.id !== bandId));
+          if (editBandId === bandId) {
+            setBandEditModalOpen(false);
+            setEditBandId(null);
+            setEditBandName('');
+          }
+          onProfileUpdate(res.profile);
+          await refreshBandData();
+          Alert.alert('Banda', 'Banda excluída com sucesso.');
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : 'Erro inesperado ao excluir banda.';
+          Alert.alert('Banda', message);
+        })
+        .finally(() => setBandCrudBusy(false));
+    },
+    [editBandId, onProfileUpdate, profile.userId, refreshBandData],
+  );
+
+  const applyDeleteBand = useCallback(
+    (bandId: string, bandName: string) => {
+      if (!profile.userId) return;
+      const message = `Esta ação remove a banda “${bandName}” e as associações de membros. Deseja continuar?`;
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        const confirmed = window.confirm(message);
+        if (!confirmed) return;
+        runDeleteBand(bandId);
+        return;
+      }
+      Alert.alert('Excluir banda', message, [
         { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Excluir',
-          style: 'destructive',
-          onPress: () => {
-            setBandCrudBusy(true);
-            void deleteOwnedBand(profile.userId, bandId)
-              .then(async (res) => {
-                if (!res.ok) {
-                  Alert.alert('Banda', res.message);
-                  return;
-                }
-                // Remove imediatamente da lista para evitar item "fantasma" na UI.
-                setBandRows((prev) => prev.filter((row) => row.id !== bandId));
-                if (editBandId === bandId) {
-                  setBandEditModalOpen(false);
-                  setEditBandId(null);
-                  setEditBandName('');
-                }
-                onProfileUpdate(res.profile);
-                const refreshed = await listBandsDetailForUser(profile.userId);
-                setBandRows(refreshed);
-                Alert.alert('Banda', 'Banda excluída com sucesso.');
-              })
-              .finally(() => setBandCrudBusy(false));
-          },
-        },
-      ],
-    );
-  }, [editBandId, onProfileUpdate, profile.userId]);
+        { text: 'Excluir', style: 'destructive', onPress: () => runDeleteBand(bandId) },
+      ]);
+    },
+    [profile.userId, runDeleteBand],
+  );
 
-  const copyInvite = async () => {
+  const runPromoteMember = useCallback(
+    async (bandId: string, memberUserId: string) => {
+      if (!profile.userId) return;
+      setBandCrudBusy(true);
+      try {
+        const res = await promoteBandMemberForOwner(profile.userId, bandId, memberUserId);
+        if (!res.ok) {
+          Alert.alert('Integrantes', res.message);
+          return;
+        }
+        const rows = await listBandMembersForOwner(profile.userId, bandId);
+        setMembersByBand((prev) => ({ ...prev, [bandId]: rows }));
+        Alert.alert('Integrantes', 'Integrante promovido para administrador.');
+      } finally {
+        setBandCrudBusy(false);
+      }
+    },
+    [profile.userId],
+  );
+
+  const runRemoveMember = useCallback(
+    async (bandId: string, memberUserId: string) => {
+      if (!profile.userId) return;
+      setBandCrudBusy(true);
+      try {
+        const res = await removeBandMemberForOwner(profile.userId, bandId, memberUserId);
+        if (!res.ok) {
+          Alert.alert('Integrantes', res.message);
+          return;
+        }
+        const rows = await listBandMembersForOwner(profile.userId, bandId);
+        setMembersByBand((prev) => ({ ...prev, [bandId]: rows }));
+        await refreshBandData();
+        Alert.alert('Integrantes', 'Integrante removido da banda.');
+      } finally {
+        setBandCrudBusy(false);
+      }
+    },
+    [profile.userId, refreshBandData],
+  );
+
+  const askRemoveMember = useCallback(
+    (bandId: string, memberUserId: string, memberLabel: string) => {
+      const message = `Remover "${memberLabel}" desta banda?`;
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        if (!window.confirm(message)) return;
+        void runRemoveMember(bandId, memberUserId);
+        return;
+      }
+      Alert.alert('Remover integrante', message, [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Remover', style: 'destructive', onPress: () => void runRemoveMember(bandId, memberUserId) },
+      ]);
+    },
+    [runRemoveMember],
+  );
+
+  const askPromoteMember = useCallback(
+    (bandId: string, memberUserId: string, memberLabel: string) => {
+      const message = `Promover "${memberLabel}" para administrador?`;
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        if (!window.confirm(message)) return;
+        void runPromoteMember(bandId, memberUserId);
+        return;
+      }
+      Alert.alert('Promover integrante', message, [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Promover', onPress: () => void runPromoteMember(bandId, memberUserId) },
+      ]);
+    },
+    [runPromoteMember],
+  );
+
+  const runDemoteMember = useCallback(
+    async (bandId: string, memberUserId: string) => {
+      if (!profile.userId) return;
+      setBandCrudBusy(true);
+      try {
+        const res = await demoteBandAdminForOwner(profile.userId, bandId, memberUserId);
+        if (!res.ok) {
+          Alert.alert('Integrantes', res.message);
+          return;
+        }
+        const rows = await listBandMembersForOwner(profile.userId, bandId);
+        setMembersByBand((prev) => ({ ...prev, [bandId]: rows }));
+        Alert.alert('Integrantes', 'Privilégios de administrador removidos.');
+      } finally {
+        setBandCrudBusy(false);
+      }
+    },
+    [profile.userId],
+  );
+
+  const askDemoteMember = useCallback(
+    (bandId: string, memberUserId: string, memberLabel: string) => {
+      const message = `Retirar privilégios de administrador de "${memberLabel}"?`;
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        if (!window.confirm(message)) return;
+        void runDemoteMember(bandId, memberUserId);
+        return;
+      }
+      Alert.alert('Retirar privilégios', message, [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Confirmar', style: 'destructive', onPress: () => void runDemoteMember(bandId, memberUserId) },
+      ]);
+    },
+    [runDemoteMember],
+  );
+
+  const askLeaveBand = useCallback(
+    (bandId: string, bandName: string) => {
+      if (!profile.userId) return;
+      const message = `Deseja sair da banda "${bandName}"?`;
+      const run = () => {
+        setBandCrudBusy(true);
+        void leaveBand(profile.userId, bandId)
+          .then(async (res) => {
+            if (!res.ok) {
+              Alert.alert('Banda', res.message);
+              return;
+            }
+            onProfileUpdate(res.profile);
+            await refreshBandData();
+            Alert.alert('Banda', 'Você saiu da banda.');
+          })
+          .finally(() => setBandCrudBusy(false));
+      };
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        if (!window.confirm(message)) return;
+        run();
+        return;
+      }
+      Alert.alert('Sair da banda', message, [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Sair', style: 'destructive', onPress: run },
+      ]);
+    },
+    [onProfileUpdate, profile.userId, refreshBandData],
+  );
+
+  const ownedBandsWithInfo = ownedBands;
+  const selectedOwnedBand =
+    activeOwnedBandId != null ? ownedBandsWithInfo.find((b) => b.id === activeOwnedBandId) ?? null : null;
+  const selectedOwnedBandIndex = selectedOwnedBand
+    ? ownedBandsWithInfo.findIndex((b) => b.id === selectedOwnedBand.id)
+    : -1;
+  const selectedInviteUrl = selectedOwnedBand?.inviteToken ? buildInviteUrl(selectedOwnedBand.inviteToken) : null;
+
+  const goToPreviousOwnedBand = useCallback(() => {
+    if (ownedBandsWithInfo.length < 2 || selectedOwnedBandIndex < 0) return;
+    const nextIndex = (selectedOwnedBandIndex - 1 + ownedBandsWithInfo.length) % ownedBandsWithInfo.length;
+    setActiveOwnedBandId(ownedBandsWithInfo[nextIndex]?.id ?? null);
+  }, [ownedBandsWithInfo, selectedOwnedBandIndex]);
+
+  const goToNextOwnedBand = useCallback(() => {
+    if (ownedBandsWithInfo.length < 2 || selectedOwnedBandIndex < 0) return;
+    const nextIndex = (selectedOwnedBandIndex + 1) % ownedBandsWithInfo.length;
+    setActiveOwnedBandId(ownedBandsWithInfo[nextIndex]?.id ?? null);
+  }, [ownedBandsWithInfo, selectedOwnedBandIndex]);
+
+  const copyInvite = async (inviteUrl: string | null) => {
     if (!inviteUrl) return;
     const ok = await copyTextToClipboard(inviteUrl);
     if (ok) Alert.alert('Copiado', 'O link do convite foi copiado.');
     else Alert.alert('Copiar', 'Não foi possível copiar (permissão ou navegador sem suporte).');
   };
 
-  const copyInviteCode = async () => {
-    const code = profile.ownedInviteToken?.trim();
-    if (!code) return;
-    const ok = await copyTextToClipboard(code);
-    if (ok) Alert.alert('Copiado', 'O código de convite foi copiado.');
-    else Alert.alert('Copiar', 'Não foi possível copiar (permissão ou navegador sem suporte).');
-  };
-
-  const shareInvite = async () => {
+  const shareInvite = async (inviteUrl: string | null) => {
     if (!inviteUrl) return;
     try {
       await Share.share({
@@ -290,6 +555,14 @@ export function HomeScreen({
     } catch {
       /* cancelado */
     }
+  };
+
+  const copyInviteCode = async (code: string | null) => {
+    const normalized = code?.trim() ?? '';
+    if (!normalized) return;
+    const ok = await copyTextToClipboard(normalized);
+    if (ok) Alert.alert('Copiado', 'O código de convite foi copiado.');
+    else Alert.alert('Copiar', 'Não foi possível copiar (permissão ou navegador sem suporte).');
   };
 
   const joinPlaceholder =
@@ -345,232 +618,415 @@ export function HomeScreen({
             Crie a sua banda aqui (ou no cadastro inicial) e compartilhe o convite. Para entrar numa banda existente, use o código ou o link abaixo.
           </Text>
 
+          <View style={styles.bandMenuTabs}>
+            <Pressable
+              onPress={() => setActiveBandMenu('convites')}
+              style={({ pressed }) => [
+                styles.bandMenuTabBtn,
+                activeBandMenu === 'convites' && styles.bandMenuTabBtnActive,
+                pressed && styles.pressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Abrir menu de convites"
+            >
+              <Text
+                style={[
+                  styles.bandMenuTabBtnText,
+                  activeBandMenu === 'convites' && styles.bandMenuTabBtnTextActive,
+                ]}
+              >
+                Convites
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setActiveBandMenu('admin')}
+              style={({ pressed }) => [
+                styles.bandMenuTabBtn,
+                activeBandMenu === 'admin' && styles.bandMenuTabBtnActive,
+                pressed && styles.pressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Abrir menu minhas bandas"
+            >
+              <Text
+                style={[
+                  styles.bandMenuTabBtnText,
+                  activeBandMenu === 'admin' && styles.bandMenuTabBtnTextActive,
+                ]}
+              >
+                Minhas bandas
+              </Text>
+            </Pressable>
+          </View>
+
           <View style={styles.bandHubDivider} />
 
-          <View style={[styles.bandHubGrid, width >= 640 && styles.bandHubGridWide]}>
-            <View style={[styles.bandHubCol, width >= 640 && styles.bandHubColWide]}>
-              <View style={styles.bandPathCard}>
-                <View style={styles.bandPathHead}>
-                  <View style={styles.bandPathBadge}>
-                    <Text style={styles.bandPathBadgeTxt}>1</Text>
-                  </View>
-                  <Text style={styles.bandPathTitle}>Criar uma banda</Text>
-                </View>
-                <Text style={styles.bandPathBody}>
-                  Ainda não tem banda como administrador? Use o botão para registar o nome. No cadastro da conta também pode marcar “Criar banda”.
-                </Text>
-                <Pressable
-                  onPress={() => setBandModalOpen(true)}
-                  style={({ pressed }) => [styles.registerBandBtn, pressed && styles.pressed]}
-                  accessibilityRole="button"
-                  accessibilityLabel={profile.ownedBandId ? 'Cadastrar nova banda' : 'Cadastrar banda'}
-                >
-                  <Text style={styles.registerBandBtnText}>
-                    {profile.ownedBandId ? 'Cadastrar nova banda' : 'Cadastrar banda'}
-                  </Text>
-                </Pressable>
-                {profile.ownedBandId ? (
-                  <View style={styles.ownerCrudWrap}>
-                    <Text style={styles.bandOwnerNote}>
-                      Banda selecionada para edição/exclusão:{' '}
-                      <Text style={styles.ownerBandName}>{profile.ownedBandName ?? 'Sem nome'}</Text>
-                    </Text>
-                    <View style={styles.ownerCrudActions}>
-                      <Pressable
-                        onPress={() =>
-                          profile.ownedBandId
-                            ? openEditBandModal(profile.ownedBandId, profile.ownedBandName ?? 'Sem nome')
-                            : undefined
-                        }
-                        disabled={bandCrudBusy}
-                        style={({ pressed }) => [styles.ownerCrudBtn, bandCrudBusy && styles.joinBtnOff, pressed && !bandCrudBusy && styles.pressed]}
-                        accessibilityRole="button"
-                        accessibilityLabel="Editar nome da banda"
-                      >
-                        <Text style={styles.ownerCrudBtnText}>Editar nome</Text>
-                      </Pressable>
-                      <Pressable
-                        onPress={() => profile.ownedBandId && void applyRegenerateInvite(profile.ownedBandId)}
-                        disabled={bandCrudBusy}
-                        style={({ pressed }) => [styles.ownerCrudBtn, bandCrudBusy && styles.joinBtnOff, pressed && !bandCrudBusy && styles.pressed]}
-                        accessibilityRole="button"
-                        accessibilityLabel="Gerar novo código de convite"
-                      >
-                        <Text style={styles.ownerCrudBtnText}>Novo código</Text>
-                      </Pressable>
-                      <Pressable
-                        onPress={() =>
-                          profile.ownedBandId &&
-                          applyDeleteBand(profile.ownedBandId, profile.ownedBandName ?? 'Sem nome')
-                        }
-                        disabled={bandCrudBusy}
-                        style={({ pressed }) => [
-                          styles.ownerCrudBtnDanger,
-                          bandCrudBusy && styles.joinBtnOff,
-                          pressed && !bandCrudBusy && styles.pressed,
-                        ]}
-                        accessibilityRole="button"
-                        accessibilityLabel="Excluir banda"
-                      >
-                        <Text style={styles.ownerCrudBtnDangerText}>Excluir banda</Text>
-                      </Pressable>
+          {activeBandMenu === 'convites' ? (
+            <View style={[styles.bandHubGrid, width >= 640 && styles.bandHubGridWide]}>
+              <View style={[styles.bandHubCol, width >= 640 && styles.bandHubColWide]}>
+                <View style={styles.bandPathCard}>
+                  <View style={styles.bandPathHead}>
+                    <View style={styles.bandPathBadge}>
+                      <Text style={styles.bandPathBadgeTxt}>1</Text>
                     </View>
+                    <Text style={styles.bandPathTitle}>Criar uma banda</Text>
                   </View>
-                ) : null}
-              </View>
-
-              {inviteUrl ? (
-                <View style={styles.invitePanel}>
-                  <View style={styles.invitePanelAccent} />
-                  <View style={styles.invitePanelInner}>
-                    <Text style={styles.invitePanelKicker}>O seu convite</Text>
-                    <Text style={styles.invitePanelTitle}>
-                      {profile.ownedBandName ? profile.ownedBandName : 'Compartilhar com a banda'}
+                  <Text style={styles.bandPathBody}>
+                    Ainda não tem banda como administrador? Use o botão para registar o nome. No cadastro da conta também pode marcar “Criar banda”.
+                  </Text>
+                  <Pressable
+                    onPress={() => setBandModalOpen(true)}
+                    style={({ pressed }) => [styles.registerBandBtn, pressed && styles.pressed]}
+                    accessibilityRole="button"
+                    accessibilityLabel={profile.ownedBandId ? 'Cadastrar nova banda' : 'Cadastrar banda'}
+                  >
+                    <Text style={styles.registerBandBtnText}>
+                      {profile.ownedBandId ? 'Cadastrar nova banda' : 'Cadastrar banda'}
                     </Text>
-                    {profile.ownedInviteToken ? (
-                      <View style={styles.inviteTokenBlock}>
-                        <Text style={styles.inviteTokenLabel}>Código gerado</Text>
-                        <Text selectable style={styles.inviteTokenValue}>
-                          {profile.ownedInviteToken}
-                        </Text>
+                  </Pressable>
+                </View>
+
+                {ownedBandsWithInfo.length > 0 ? (
+                  <View style={styles.inviteCarouselWrap}>
+                    <View style={styles.inviteCarouselTop}>
+                      <Text style={styles.inviteCarouselTitle}>Códigos de convite (carrossel)</Text>
+                      {ownedBandsWithInfo.length > 1 ? (
+                        <View style={styles.inviteCarouselNav}>
+                          <Pressable
+                            onPress={goToPreviousOwnedBand}
+                            style={({ pressed }) => [styles.inviteCarouselNavBtn, pressed && styles.pressed]}
+                            accessibilityRole="button"
+                            accessibilityLabel="Banda anterior"
+                          >
+                            <Text style={styles.inviteCarouselNavBtnText}>Anterior</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={goToNextOwnedBand}
+                            style={({ pressed }) => [styles.inviteCarouselNavBtn, pressed && styles.pressed]}
+                            accessibilityRole="button"
+                            accessibilityLabel="Próxima banda"
+                          >
+                            <Text style={styles.inviteCarouselNavBtnText}>Próxima</Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
+                    </View>
+                    {selectedOwnedBand ? (
+                      <View style={[styles.invitePanel, styles.invitePanelActive]}>
+                        <View style={styles.invitePanelAccent} />
+                        <View style={styles.invitePanelInner}>
+                          <Text style={styles.invitePanelKicker}>
+                            Convite da banda{' '}
+                            {selectedOwnedBandIndex >= 0 ? `(${selectedOwnedBandIndex + 1}/${ownedBandsWithInfo.length})` : ''}
+                          </Text>
+                          <View style={styles.bandIdentityHero}>
+                            <View style={styles.bandAvatarHeroWrap}>
+                              {selectedOwnedBand.photoUrl ? (
+                                <Image source={{ uri: selectedOwnedBand.photoUrl }} style={styles.bandAvatarHeroImg} />
+                              ) : (
+                                <Text style={styles.bandAvatarHeroFallback}>
+                                  {selectedOwnedBand.name.slice(0, 2).toUpperCase()}
+                                </Text>
+                              )}
+                            </View>
+                            <Text style={styles.invitePanelTitle}>{selectedOwnedBand.name}</Text>
+                          </View>
+                          {selectedOwnedBand.inviteToken ? (
+                            <View style={styles.inviteTokenBlock}>
+                              <Text style={styles.inviteTokenLabel}>Código</Text>
+                              <Text selectable style={styles.inviteTokenValue}>
+                                {selectedOwnedBand.inviteToken}
+                              </Text>
+                            </View>
+                          ) : null}
+                          <View style={styles.inviteUrlBox}>
+                            <Text selectable style={styles.inviteUrlMono}>
+                              {selectedInviteUrl ?? 'Sem link disponível'}
+                            </Text>
+                          </View>
+                          <View style={styles.inviteActions}>
+                            <Pressable
+                              onPress={() => void copyInviteCode(selectedOwnedBand.inviteToken)}
+                              style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Copiar código de ${selectedOwnedBand.name}`}
+                            >
+                              <Text style={styles.inviteBtnSecondaryText}>Copiar código</Text>
+                            </Pressable>
+                            <Pressable
+                              onPress={() => void copyInvite(selectedInviteUrl)}
+                              style={({ pressed }) => [styles.inviteBtn, pressed && styles.pressed]}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Copiar link de ${selectedOwnedBand.name}`}
+                            >
+                              <Text style={styles.inviteBtnText}>Copiar link</Text>
+                            </Pressable>
+                            <Pressable
+                              onPress={() => void shareInvite(selectedInviteUrl)}
+                              style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Compartilhar convite de ${selectedOwnedBand.name}`}
+                            >
+                              <Text style={styles.inviteBtnSecondaryText}>Compartilhar</Text>
+                            </Pressable>
+                          </View>
+                        </View>
                       </View>
                     ) : null}
-                    <Text style={styles.invitePanelLead}>
-                      {Platform.OS === 'web'
-                        ? 'Quem receber cria conta, entra e cola o código em “Entrar com código”, abaixo. (Demo: mesmo navegador.)'
-                        : 'Quem receber regista-se, entra e usa o código em “Entrar com código”, abaixo.'}
+                  </View>
+                ) : (
+                  <View style={styles.invitePlaceholder}>
+                    <Text style={styles.invitePlaceholderText}>
+                      Depois de cadastrar uma banda (botão acima ou no registo), o link de convite aparece aqui para copiar ou compartilhar.
                     </Text>
-                    <View style={styles.inviteUrlBox}>
-                      <Text selectable style={styles.inviteUrlMono}>
-                        {inviteUrl}
-                      </Text>
-                    </View>
-                    <View style={styles.inviteActions}>
-                      {profile.ownedInviteToken ? (
-                        <Pressable
-                          onPress={() => void copyInviteCode()}
-                          style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]}
-                          accessibilityRole="button"
-                          accessibilityLabel="Copiar código do convite"
-                        >
-                          <Text style={styles.inviteBtnSecondaryText}>Copiar código</Text>
-                        </Pressable>
-                      ) : null}
-                      <Pressable
-                        onPress={() => void copyInvite()}
-                        style={({ pressed }) => [styles.inviteBtn, pressed && styles.pressed]}
-                        accessibilityRole="button"
-                        accessibilityLabel="Copiar link do convite"
-                      >
-                        <Text style={styles.inviteBtnText}>Copiar link</Text>
-                      </Pressable>
-                      <Pressable
-                        onPress={() => void shareInvite()}
-                        style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]}
-                        accessibilityRole="button"
-                        accessibilityLabel="Compartilhar convite"
-                      >
-                        <Text style={styles.inviteBtnSecondaryText}>Compartilhar</Text>
-                      </Pressable>
-                    </View>
                   </View>
-                </View>
-              ) : (
-                <View style={styles.invitePlaceholder}>
-                  <Text style={styles.invitePlaceholderText}>
-                    Depois de cadastrar uma banda (botão acima ou no registo), o link de convite aparece aqui para copiar ou compartilhar.
-                  </Text>
-                </View>
-              )}
-            </View>
-
-            <View style={[styles.bandHubCol, width >= 640 && styles.bandHubColWide]}>
-              <View style={styles.bandPathCard}>
-                <View style={styles.bandPathHead}>
-                  <View style={[styles.bandPathBadge, styles.bandPathBadgeAlt]}>
-                    <Text style={styles.bandPathBadgeTxt}>2</Text>
-                  </View>
-                  <Text style={styles.bandPathTitle}>Entrar com código</Text>
-                </View>
-                <Text style={styles.bandPathBody}>
-                  Aceita o token <Text style={styles.bandPathMono}>inv_…</Text>, o URL com{' '}
-                  <Text style={styles.bandPathMono}>?join=…</Text> ou texto que contenha esses valores — detetamos automaticamente.
-                </Text>
-                <Text style={styles.joinFieldLabel}>Código ou link de convite</Text>
-                <TextInput
-                  style={styles.joinInput}
-                  placeholder={joinPlaceholder}
-                  placeholderTextColor={COLORS.muted}
-                  value={joinCode}
-                  onChangeText={setJoinCode}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-                {joinBandPreview ? (
-                  <Text style={styles.joinPreview}>Banda encontrada: {joinBandPreview}</Text>
-                ) : joinCode.trim().length > 0 ? (
-                  <Text style={styles.joinPreviewMuted}>A validar… se existir aqui, o nome da banda aparece.</Text>
-                ) : null}
-                <Pressable
-                  onPress={() => void applyJoinBand()}
-                  disabled={joinBusy}
-                  style={({ pressed }) => [styles.joinBtn, joinBusy && styles.joinBtnOff, pressed && !joinBusy && styles.pressed]}
-                  accessibilityRole="button"
-                >
-                  {joinBusy ? (
-                    <ActivityIndicator color={COLORS.accentText} />
-                  ) : (
-                    <Text style={styles.joinBtnText}>Entrar na banda</Text>
-                  )}
-                </Pressable>
+                )}
               </View>
 
+              <View style={[styles.bandHubCol, width >= 640 && styles.bandHubColWide]}>
+                <View style={styles.bandPathCard}>
+                  <View style={styles.bandPathHead}>
+                    <View style={[styles.bandPathBadge, styles.bandPathBadgeAlt]}>
+                      <Text style={styles.bandPathBadgeTxt}>2</Text>
+                    </View>
+                    <Text style={styles.bandPathTitle}>Entrar com código</Text>
+                  </View>
+                  <Text style={styles.bandPathBody}>
+                    Aceita o token <Text style={styles.bandPathMono}>inv_…</Text>, o URL com{' '}
+                    <Text style={styles.bandPathMono}>?join=…</Text> ou texto que contenha esses valores — detetamos automaticamente.
+                  </Text>
+                  <Text style={styles.joinFieldLabel}>Código ou link de convite</Text>
+                  <TextInput
+                    style={styles.joinInput}
+                    placeholder={joinPlaceholder}
+                    placeholderTextColor={COLORS.muted}
+                    value={joinCode}
+                    onChangeText={setJoinCode}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  {joinBandPreview ? (
+                    <Text style={styles.joinPreview}>Banda encontrada: {joinBandPreview}</Text>
+                  ) : joinCode.trim().length > 0 ? (
+                    <Text style={styles.joinPreviewMuted}>A validar… se existir aqui, o nome da banda aparece.</Text>
+                  ) : null}
+                  <Pressable
+                    onPress={() => void applyJoinBand()}
+                    disabled={joinBusy}
+                    style={({ pressed }) => [styles.joinBtn, joinBusy && styles.joinBtnOff, pressed && !joinBusy && styles.pressed]}
+                    accessibilityRole="button"
+                  >
+                    {joinBusy ? (
+                      <ActivityIndicator color={COLORS.accentText} />
+                    ) : (
+                      <Text style={styles.joinBtnText}>Entrar na banda</Text>
+                    )}
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.adminPageWrap}>
+              <Text style={styles.adminPageTitle}>Administração de bandas</Text>
+              <Text style={styles.adminPageLead}>Escolha uma banda para editar, gerar novo código ou excluir.</Text>
               <View style={styles.bandsPanel}>
-                <Text style={styles.bandsPanelTitle}>As suas bandas</Text>
+                <Text style={styles.bandsPanelTitle}>Menu · Minhas bandas</Text>
+                <Text style={styles.bandsPanelLead}>
+                  Administre cada banda por aqui: editar nome, gerar novo código e excluir.
+                </Text>
                 {bandRows.length > 0 ? (
                   bandRows.map((row, i) => (
                     <View
                       key={`${row.id}-${row.role}-${i}`}
                       style={[styles.bandChip, i > 0 && styles.bandChipSpaced]}
                     >
-                      <View style={styles.bandChipMain}>
-                        <Text style={styles.bandChipName} numberOfLines={1}>
-                          {row.name}
-                        </Text>
-                        <Text style={styles.bandChipRole} numberOfLines={1}>
-                          {row.role}
-                        </Text>
+                      <View style={styles.bandChipTopRow}>
+                        <View style={styles.bandAvatarListWrap}>
+                          {row.photoUrl ? (
+                            <Image source={{ uri: row.photoUrl }} style={styles.bandAvatarListImg} />
+                          ) : (
+                            <Text style={styles.bandAvatarListFallback}>{row.name.slice(0, 2).toUpperCase()}</Text>
+                          )}
+                        </View>
+                        <View style={styles.bandChipMain}>
+                          <Text style={styles.bandChipName} numberOfLines={1}>
+                            {row.name}
+                          </Text>
+                          <Text style={styles.bandChipRole} numberOfLines={1}>
+                            {row.role}
+                          </Text>
+                          {row.inviteToken ? (
+                            <Text style={styles.bandChipInfo} numberOfLines={1}>
+                              Convite: {row.inviteToken}
+                            </Text>
+                          ) : null}
+                        </View>
                       </View>
                       {row.canManage ? (
+                        <View>
+                          <View style={styles.bandChipActions}>
+                            <Pressable
+                              onPress={() => openEditBandModal(row.id, row.name, row.photoUrl)}
+                              disabled={bandCrudBusy}
+                              style={({ pressed }) => [
+                                styles.ownerCrudBtn,
+                                bandCrudBusy && styles.joinBtnOff,
+                                pressed && !bandCrudBusy && styles.pressed,
+                              ]}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Editar ${row.name}`}
+                            >
+                              <Text style={styles.ownerCrudBtnText}>Editar</Text>
+                            </Pressable>
+                            <Pressable
+                              onPress={() => void applyRegenerateInvite(row.id)}
+                              disabled={bandCrudBusy}
+                              style={({ pressed }) => [
+                                styles.ownerCrudBtn,
+                                bandCrudBusy && styles.joinBtnOff,
+                                pressed && !bandCrudBusy && styles.pressed,
+                              ]}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Gerar novo código para ${row.name}`}
+                            >
+                              <Text style={styles.ownerCrudBtnText}>Novo código</Text>
+                            </Pressable>
+                            <Pressable
+                              onPress={() => void toggleBandMembers(row.id)}
+                              disabled={membersLoadingByBand[row.id]}
+                              style={({ pressed }) => [
+                                styles.ownerCrudBtn,
+                                membersLoadingByBand[row.id] && styles.joinBtnOff,
+                                pressed && !membersLoadingByBand[row.id] && styles.pressed,
+                              ]}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Ver integrantes de ${row.name}`}
+                            >
+                              <Text style={styles.ownerCrudBtnText}>
+                                {expandedMemberBands[row.id] ? 'Ocultar integrantes' : 'Ver integrantes'}
+                              </Text>
+                            </Pressable>
+                            <Pressable
+                              onPress={() => applyDeleteBand(row.id, row.name)}
+                              disabled={bandCrudBusy}
+                              style={({ pressed }) => [
+                                styles.ownerCrudBtnDanger,
+                                bandCrudBusy && styles.joinBtnOff,
+                                pressed && !bandCrudBusy && styles.pressed,
+                              ]}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Excluir ${row.name}`}
+                            >
+                              <Text style={styles.ownerCrudBtnDangerText}>Excluir</Text>
+                            </Pressable>
+                          </View>
+                          {expandedMemberBands[row.id] ? (
+                            <View style={styles.membersPanel}>
+                              {membersLoadingByBand[row.id] ? (
+                                <Text style={styles.membersHint}>Carregando integrantes...</Text>
+                              ) : (membersByBand[row.id] ?? []).length > 0 ? (
+                                (membersByBand[row.id] ?? []).map((member) => (
+                                  <View key={`${row.id}-${member.userId}`} style={styles.memberRow}>
+                                    <Text style={styles.memberName}>
+                                      {member.displayName?.trim() || member.email || 'Integrante sem nome'}
+                                    </Text>
+                                    <Text style={styles.memberMeta}>
+                                      {member.role === 'admin' ? 'Administrador' : 'Membro'}
+                                      {member.email ? ` · ${member.email}` : ''}
+                                    </Text>
+                                    {member.userId !== profile.userId ? (
+                                      <View style={styles.memberActions}>
+                                        {member.role !== 'admin' ? (
+                                          <Pressable
+                                            onPress={() =>
+                                              askPromoteMember(
+                                                row.id,
+                                                member.userId,
+                                                member.displayName?.trim() || member.email || 'Integrante',
+                                              )
+                                            }
+                                            disabled={bandCrudBusy}
+                                            style={({ pressed }) => [
+                                              styles.ownerCrudBtn,
+                                              bandCrudBusy && styles.joinBtnOff,
+                                              pressed && !bandCrudBusy && styles.pressed,
+                                            ]}
+                                            accessibilityRole="button"
+                                            accessibilityLabel={`Promover ${member.displayName || member.email || 'integrante'}`}
+                                          >
+                                            <Text style={styles.ownerCrudBtnText}>Promover admin</Text>
+                                          </Pressable>
+                                        ) : (
+                                          <Pressable
+                                            onPress={() =>
+                                              askDemoteMember(
+                                                row.id,
+                                                member.userId,
+                                                member.displayName?.trim() || member.email || 'Integrante',
+                                              )
+                                            }
+                                            disabled={bandCrudBusy}
+                                            style={({ pressed }) => [
+                                              styles.ownerCrudBtn,
+                                              bandCrudBusy && styles.joinBtnOff,
+                                              pressed && !bandCrudBusy && styles.pressed,
+                                            ]}
+                                            accessibilityRole="button"
+                                            accessibilityLabel={`Retirar privilégios de ${member.displayName || member.email || 'integrante'}`}
+                                          >
+                                            <Text style={styles.ownerCrudBtnText}>Retirar admin</Text>
+                                          </Pressable>
+                                        )}
+                                        <Pressable
+                                          onPress={() =>
+                                            askRemoveMember(
+                                              row.id,
+                                              member.userId,
+                                              member.displayName?.trim() || member.email || 'Integrante',
+                                            )
+                                          }
+                                          disabled={bandCrudBusy}
+                                          style={({ pressed }) => [
+                                            styles.ownerCrudBtnDanger,
+                                            bandCrudBusy && styles.joinBtnOff,
+                                            pressed && !bandCrudBusy && styles.pressed,
+                                          ]}
+                                          accessibilityRole="button"
+                                          accessibilityLabel={`Remover ${member.displayName || member.email || 'integrante'}`}
+                                        >
+                                          <Text style={styles.ownerCrudBtnDangerText}>Retirar</Text>
+                                        </Pressable>
+                                      </View>
+                                    ) : null}
+                                  </View>
+                                ))
+                              ) : (
+                                <Text style={styles.membersHint}>
+                                  Nenhum integrante visível ainda. Se já existem membros, aplique a migration da RPC de listagem de integrantes.
+                                </Text>
+                              )}
+                            </View>
+                          ) : null}
+                        </View>
+                      ) : (
                         <View style={styles.bandChipActions}>
                           <Pressable
-                            onPress={() => openEditBandModal(row.id, row.name)}
-                            disabled={bandCrudBusy}
+                            onPress={() => void toggleBandMembers(row.id)}
+                            disabled={membersLoadingByBand[row.id]}
                             style={({ pressed }) => [
                               styles.ownerCrudBtn,
-                              bandCrudBusy && styles.joinBtnOff,
-                              pressed && !bandCrudBusy && styles.pressed,
+                              membersLoadingByBand[row.id] && styles.joinBtnOff,
+                              pressed && !membersLoadingByBand[row.id] && styles.pressed,
                             ]}
                             accessibilityRole="button"
-                            accessibilityLabel={`Editar ${row.name}`}
+                            accessibilityLabel={`Ver integrantes de ${row.name}`}
                           >
-                            <Text style={styles.ownerCrudBtnText}>Editar</Text>
+                            <Text style={styles.ownerCrudBtnText}>
+                              {expandedMemberBands[row.id] ? 'Ocultar integrantes' : 'Ver integrantes'}
+                            </Text>
                           </Pressable>
                           <Pressable
-                            onPress={() => void applyRegenerateInvite(row.id)}
-                            disabled={bandCrudBusy}
-                            style={({ pressed }) => [
-                              styles.ownerCrudBtn,
-                              bandCrudBusy && styles.joinBtnOff,
-                              pressed && !bandCrudBusy && styles.pressed,
-                            ]}
-                            accessibilityRole="button"
-                            accessibilityLabel={`Gerar novo código para ${row.name}`}
-                          >
-                            <Text style={styles.ownerCrudBtnText}>Novo código</Text>
-                          </Pressable>
-                          <Pressable
-                            onPress={() => applyDeleteBand(row.id, row.name)}
+                            onPress={() => askLeaveBand(row.id, row.name)}
                             disabled={bandCrudBusy}
                             style={({ pressed }) => [
                               styles.ownerCrudBtnDanger,
@@ -578,22 +1034,43 @@ export function HomeScreen({
                               pressed && !bandCrudBusy && styles.pressed,
                             ]}
                             accessibilityRole="button"
-                            accessibilityLabel={`Excluir ${row.name}`}
+                            accessibilityLabel={`Sair da banda ${row.name}`}
                           >
-                            <Text style={styles.ownerCrudBtnDangerText}>Excluir</Text>
+                            <Text style={styles.ownerCrudBtnDangerText}>Sair da banda</Text>
                           </Pressable>
+                        </View>
+                      )}
+                      {!row.canManage && expandedMemberBands[row.id] ? (
+                        <View style={styles.membersPanel}>
+                          {membersLoadingByBand[row.id] ? (
+                            <Text style={styles.membersHint}>Carregando integrantes...</Text>
+                          ) : (membersByBand[row.id] ?? []).length > 0 ? (
+                            (membersByBand[row.id] ?? []).map((member) => (
+                              <View key={`${row.id}-${member.userId}`} style={styles.memberRow}>
+                                <Text style={styles.memberName}>
+                                  {member.displayName?.trim() || member.email || 'Integrante sem nome'}
+                                </Text>
+                                <Text style={styles.memberMeta}>
+                                  {member.role === 'admin' ? 'Administrador' : 'Membro'}
+                                  {member.email ? ` · ${member.email}` : ''}
+                                </Text>
+                              </View>
+                            ))
+                          ) : (
+                            <Text style={styles.membersHint}>Nenhum integrante visível nesta banda.</Text>
+                          )}
                         </View>
                       ) : null}
                     </View>
                   ))
                 ) : (
                   <Text style={styles.bandsEmpty}>
-                    Ainda sem bandas — use o passo 1 (cadastro) ou o passo 2 (código).
+                    Ainda sem bandas — use o menu Convites para cadastrar ou entrar em uma banda.
                   </Text>
                 )}
               </View>
             </View>
-          </View>
+          )}
         </View>
 
         <Text style={styles.section}>Estúdio</Text>
@@ -674,6 +1151,22 @@ export function HomeScreen({
               editable={!bandModalBusy}
               autoCorrect={false}
             />
+            <Text style={styles.modalFieldLabel}>Foto da banda (URL, opcional)</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="https://..."
+              placeholderTextColor={COLORS.muted}
+              value={newBandPhotoUrl}
+              onChangeText={setNewBandPhotoUrl}
+              editable={!bandModalBusy}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            {normalizePhotoUrl(newBandPhotoUrl) ? (
+              <Image source={{ uri: normalizePhotoUrl(newBandPhotoUrl) ?? '' }} style={styles.modalPhotoPreview} />
+            ) : (
+              <Text style={styles.modalHint}>Dica: use um link público https para exibir a foto da banda.</Text>
+            )}
             <View style={styles.modalActions}>
               <Pressable
                 onPress={() => !bandModalBusy && setBandModalOpen(false)}
@@ -723,7 +1216,7 @@ export function HomeScreen({
             />
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>Editar banda</Text>
-              <Text style={styles.modalLead}>Altere o nome visível para os membros.</Text>
+              <Text style={styles.modalLead}>Altere o nome e a foto visível para os membros.</Text>
               <Text style={styles.modalFieldLabel}>Nome da banda</Text>
               <TextInput
                 style={styles.modalInput}
@@ -734,6 +1227,22 @@ export function HomeScreen({
                 editable={!bandCrudBusy}
                 autoCorrect={false}
               />
+              <Text style={styles.modalFieldLabel}>Foto da banda (URL)</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="https://..."
+                placeholderTextColor={COLORS.muted}
+                value={editBandPhotoUrl}
+                onChangeText={setEditBandPhotoUrl}
+                editable={!bandCrudBusy}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {normalizePhotoUrl(editBandPhotoUrl) ? (
+                <Image source={{ uri: normalizePhotoUrl(editBandPhotoUrl) ?? '' }} style={styles.modalPhotoPreview} />
+              ) : (
+                <Text style={styles.modalHint}>Deixe vazio para remover a foto da banda.</Text>
+              )}
               <View style={styles.modalActions}>
                 <Pressable
                   onPress={() => !bandCrudBusy && setBandEditModalOpen(false)}
@@ -755,7 +1264,7 @@ export function HomeScreen({
                   {bandCrudBusy ? (
                     <ActivityIndicator color={COLORS.accentText} />
                   ) : (
-                    <Text style={styles.modalBtnPrimaryText}>Salvar nome</Text>
+                    <Text style={styles.modalBtnPrimaryText}>Salvar alterações</Text>
                   )}
                 </Pressable>
               </View>
@@ -763,6 +1272,7 @@ export function HomeScreen({
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
     </View>
   );
 }
@@ -784,21 +1294,22 @@ const styles = StyleSheet.create({
     }),
   },
   appName: {
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: '800',
     color: COLORS.text,
-    marginBottom: 20,
+    marginBottom: 22,
+    letterSpacing: 0.2,
   },
   bandHub: {
-    backgroundColor: COLORS.bgElevated,
-    borderRadius: 16,
+    backgroundColor: 'rgba(18, 22, 38, 0.9)',
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: COLORS.border,
     padding: 18,
     marginBottom: 24,
     ...Platform.select({
       web: {
-        boxShadow: '0 0 0 1px rgba(255,255,255,0.04) inset',
+        boxShadow: '0 16px 36px rgba(0,0,0,0.28)',
       },
       default: {},
     }),
@@ -823,6 +1334,32 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     lineHeight: 22,
     maxWidth: 560,
+  },
+  bandMenuTabs: {
+    marginTop: 14,
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  bandMenuTabBtn: {
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bgElevated,
+  },
+  bandMenuTabBtnActive: {
+    borderColor: COLORS.accent,
+    backgroundColor: 'rgba(244, 176, 66, 0.14)',
+  },
+  bandMenuTabBtnText: {
+    color: COLORS.text,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  bandMenuTabBtnTextActive: {
+    color: COLORS.accent,
   },
   registerBandBtn: {
     marginTop: 14,
@@ -875,8 +1412,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(248,113,113,0.45)',
-    backgroundColor: 'rgba(248,113,113,0.14)',
+    borderColor: 'rgba(255,122,155,0.45)',
+    backgroundColor: 'rgba(255,122,155,0.14)',
   },
   ownerCrudBtnDangerText: {
     color: COLORS.danger,
@@ -907,10 +1444,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   bandPathCard: {
-    backgroundColor: COLORS.card,
+    backgroundColor: 'rgba(26, 34, 54, 0.88)',
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: 'rgba(255,255,255,0.1)',
     padding: 16,
   },
   bandPathHead: {
@@ -923,15 +1460,15 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 8,
-    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+    backgroundColor: 'rgba(255, 190, 152, 0.2)',
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.45)',
+    borderColor: 'rgba(255, 190, 152, 0.45)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   bandPathBadgeAlt: {
-    backgroundColor: 'rgba(52, 211, 153, 0.12)',
-    borderColor: 'rgba(52, 211, 153, 0.35)',
+    backgroundColor: 'rgba(92, 211, 176, 0.12)',
+    borderColor: 'rgba(92, 211, 176, 0.35)',
   },
   bandPathBadgeTxt: {
     fontSize: 14,
@@ -960,8 +1497,56 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.35)',
+    borderColor: 'rgba(255, 190, 152, 0.35)',
     backgroundColor: COLORS.card,
+  },
+  inviteCarouselWrap: {
+    gap: 10,
+  },
+  inviteCarouselTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  inviteCarouselTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  inviteCarouselNav: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  inviteCarouselNavBtn: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bgElevated,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  inviteCarouselNavBtnText: {
+    color: COLORS.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  inviteCarouselContent: {
+    gap: 10,
+    paddingRight: 6,
+  },
+  inviteCarouselItem: {
+    width: Platform.select({ web: 370, default: 320 }) as number,
+    flexShrink: 0,
+  },
+  invitePanelActive: {
+    borderColor: COLORS.accent,
+  },
+  inviteCarouselHint: {
+    fontSize: 12,
+    color: COLORS.muted,
+    lineHeight: 18,
   },
   invitePanelAccent: {
     width: 4,
@@ -985,6 +1570,37 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: COLORS.text,
   },
+  bandIdentityHero: {
+    marginTop: 8,
+    alignItems: 'center',
+    gap: 8,
+  },
+  bandAvatarHeroWrap: {
+    width: 92,
+    height: 92,
+    borderRadius: 24,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+    backgroundColor: COLORS.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      web: {
+        boxShadow: '0 10px 24px rgba(244, 176, 66, 0.25)',
+      },
+      default: {},
+    }),
+  },
+  bandAvatarHeroImg: {
+    width: '100%',
+    height: '100%',
+  },
+  bandAvatarHeroFallback: {
+    color: COLORS.text,
+    fontSize: 24,
+    fontWeight: '800',
+  },
   invitePanelLead: {
     marginTop: 8,
     fontSize: 13,
@@ -996,9 +1612,9 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 12,
     borderRadius: 10,
-    backgroundColor: 'rgba(52, 211, 153, 0.08)',
+    backgroundColor: 'rgba(92, 211, 176, 0.08)',
     borderWidth: 1,
-    borderColor: 'rgba(52, 211, 153, 0.25)',
+    borderColor: 'rgba(92, 211, 176, 0.25)',
   },
   inviteTokenLabel: {
     fontSize: 11,
@@ -1069,16 +1685,35 @@ const styles = StyleSheet.create({
   },
   inviteBtnSecondaryText: { color: COLORS.text, fontWeight: '700', fontSize: 14 },
   bandsPanel: {
-    backgroundColor: COLORS.card,
+    backgroundColor: 'rgba(26, 34, 54, 0.88)',
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: 'rgba(255,255,255,0.1)',
     padding: 16,
+  },
+  adminPageWrap: {
+    gap: 12,
+  },
+  adminPageTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  adminPageLead: {
+    fontSize: 13,
+    color: COLORS.muted,
+    lineHeight: 20,
   },
   bandsPanelTitle: {
     fontSize: 13,
     fontWeight: '800',
     color: COLORS.text,
+    marginBottom: 6,
+  },
+  bandsPanelLead: {
+    fontSize: 12,
+    color: COLORS.muted,
+    lineHeight: 18,
     marginBottom: 12,
   },
   bandChip: {
@@ -1089,11 +1724,17 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 14,
   },
+  bandChipTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
   bandChipSpaced: {
     marginTop: 10,
   },
   bandChipMain: {
     minWidth: 0,
+    flex: 1,
   },
   bandChipActions: {
     marginTop: 10,
@@ -1101,15 +1742,85 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
   },
+  membersPanel: {
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bgElevated,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  memberRow: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
+    paddingBottom: 8,
+  },
+  memberName: {
+    fontSize: 13,
+    color: COLORS.text,
+    fontWeight: '700',
+  },
+  memberMeta: {
+    marginTop: 2,
+    fontSize: 12,
+    color: COLORS.muted,
+  },
+  memberActions: {
+    marginTop: 8,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  membersHint: {
+    fontSize: 12,
+    color: COLORS.muted,
+    lineHeight: 18,
+  },
+  bandAvatarListWrap: {
+    width: 58,
+    height: 58,
+    borderRadius: 14,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+    backgroundColor: COLORS.bgElevated,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 6px 16px rgba(0,0,0,0.22)',
+      },
+      default: {},
+    }),
+  },
+  bandAvatarListImg: {
+    width: '100%',
+    height: '100%',
+  },
+  bandAvatarListFallback: {
+    color: COLORS.text,
+    fontSize: 16,
+    fontWeight: '800',
+  },
   bandChipName: {
     fontSize: 15,
     fontWeight: '700',
     color: COLORS.text,
+    flex: 1,
   },
   bandChipRole: {
     marginTop: 4,
     fontSize: 13,
     color: COLORS.muted,
+  },
+  bandChipInfo: {
+    marginTop: 5,
+    fontSize: 12,
+    color: COLORS.accent,
+    fontFamily: Platform.select({ web: 'ui-monospace, monospace', default: 'monospace' }) as string,
   },
   bandsEmpty: {
     fontSize: 14,
@@ -1118,19 +1829,27 @@ const styles = StyleSheet.create({
   },
   cta: {
     backgroundColor: COLORS.accent,
-    borderRadius: 14,
-    padding: 18,
+    borderRadius: 16,
+    padding: 20,
     marginBottom: 28,
+    ...Platform.select({
+      web: { boxShadow: '0 14px 30px rgba(244, 176, 66, 0.3)' },
+      default: {},
+    }),
   },
   ctaTitle: { color: COLORS.accentText, fontSize: 18, fontWeight: '800' },
   ctaSub: { marginTop: 6, color: COLORS.accentText, fontSize: 14, opacity: 0.9 },
   secondaryCta: {
     borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.card,
-    borderRadius: 14,
-    padding: 18,
+    borderColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(26, 34, 54, 0.86)',
+    borderRadius: 16,
+    padding: 20,
     marginBottom: 28,
+    ...Platform.select({
+      web: { boxShadow: '0 12px 26px rgba(0,0,0,0.22)' },
+      default: {},
+    }),
   },
   secondaryCtaTitle: { color: COLORS.text, fontSize: 17, fontWeight: '800' },
   secondaryCtaSub: { marginTop: 6, color: COLORS.muted, fontSize: 14, lineHeight: 20 },
@@ -1166,12 +1885,16 @@ const styles = StyleSheet.create({
   joinBtnOff: { opacity: 0.6 },
   joinBtnText: { color: COLORS.accentText, fontWeight: '800', fontSize: 15 },
   card: {
-    backgroundColor: COLORS.card,
-    borderRadius: 14,
+    backgroundColor: 'rgba(26, 34, 54, 0.88)',
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: COLORS.border,
-    padding: 16,
+    borderColor: 'rgba(255,255,255,0.1)',
+    padding: 18,
     marginBottom: 20,
+    ...Platform.select({
+      web: { boxShadow: '0 10px 22px rgba(0,0,0,0.18)' },
+      default: {},
+    }),
   },
   roleLine: { fontSize: 16, color: COLORS.text, fontWeight: '600', marginBottom: 8 },
   muted: { fontSize: 15, color: COLORS.muted, lineHeight: 22 },
@@ -1189,8 +1912,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
-  mockTagAccent: { backgroundColor: 'rgba(245, 158, 11, 0.15)', borderColor: 'rgba(245, 158, 11, 0.35)' },
-  mockTagWarn: { backgroundColor: 'rgba(248, 113, 113, 0.12)', borderColor: 'rgba(248, 113, 113, 0.35)' },
+  mockTagAccent: { backgroundColor: 'rgba(255, 190, 152, 0.15)', borderColor: 'rgba(255, 190, 152, 0.35)' },
+  mockTagWarn: { backgroundColor: 'rgba(255, 122, 155, 0.12)', borderColor: 'rgba(255, 122, 155, 0.35)' },
   mockTagText: { fontSize: 11, fontWeight: '800', color: COLORS.muted },
   mockTagTextAccent: { color: COLORS.accent },
   mockTagTextWarn: { color: COLORS.danger },
@@ -1264,6 +1987,21 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: COLORS.text,
     minHeight: 48,
+  },
+  modalPhotoPreview: {
+    marginTop: 10,
+    width: 64,
+    height: 64,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bgElevated,
+  },
+  modalHint: {
+    marginTop: 8,
+    fontSize: 12,
+    color: COLORS.muted,
+    lineHeight: 18,
   },
   modalActions: {
     flexDirection: 'row',

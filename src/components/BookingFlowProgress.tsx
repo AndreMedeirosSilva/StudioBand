@@ -102,11 +102,11 @@ const styles = StyleSheet.create({
   },
   nodeActive: {
     borderColor: COLORS.accent,
-    backgroundColor: 'rgba(245, 158, 11, 0.22)',
+    backgroundColor: 'rgba(255, 190, 152, 0.22)',
   },
   nodeDone: {
     borderColor: COLORS.success,
-    backgroundColor: 'rgba(52, 211, 153, 0.12)',
+    backgroundColor: 'rgba(92, 211, 176, 0.12)',
   },
   nodeNum: { fontSize: 15, fontWeight: '800', color: COLORS.muted },
   nodeNumActive: { color: COLORS.accent },
