@@ -60,6 +60,14 @@ function mapOwnedBandRpcError(err: { message?: string; code?: string } | null): 
   if (m.includes('empty_invite_token')) {
     return 'Erro ao gerar o código de convite. Tente de novo.';
   }
+  if (
+    m.includes('primary_owner_user_id') ||
+    m.includes('owner_user_id') ||
+    m.includes('already has owned band') ||
+    m.includes('already_has_owned_band')
+  ) {
+    return 'Você já criou uma banda como administrador. Use o link de convite ou entre em outras bandas com código.';
+  }
   if (m.includes('unique') || m.includes('duplicate') || m.includes('invite_token')) {
     return 'Conflito no código de convite. Tente criar a banda de novo.';
   }
@@ -75,10 +83,16 @@ function mapOwnedBandRpcError(err: { message?: string; code?: string } | null): 
 function isInviteTokenConflictError(err: { message?: string; code?: string } | null): boolean {
   if (!err) return false;
   const m = (err.message ?? '').toLowerCase();
+  const looksLikeOwnerUniq =
+    m.includes('primary_owner_user_id') ||
+    m.includes('owner_user_id') ||
+    m.includes('already_has_owned_band') ||
+    m.includes('already has owned band');
+  if (looksLikeOwnerUniq) return false;
   return (
-    err.code === '23505' ||
+    (err.code === '23505' && m.includes('invite')) ||
     (m.includes('unique') && m.includes('invite_token')) ||
-    m.includes('duplicate key value') ||
+    (m.includes('duplicate key value') && m.includes('invite')) ||
     m.includes('invite_token')
   );
 }
@@ -377,6 +391,109 @@ export async function createOwnedBandRemote(bandName: string): Promise<RemoteLog
       ownedInviteToken: created.inviteToken,
     },
   };
+}
+
+async function getOwnedBandForUserId(
+  sb: ReturnType<typeof getSupabase>,
+  userId: string,
+): Promise<{ id: string; name: string; invite_token: string | null } | null> {
+  const { data, error } = await sb
+    .from('bands')
+    .select('id, name, invite_token')
+    .eq('primary_owner_user_id', userId)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data;
+}
+
+export async function renameOwnedBandRemote(nextBandName: string): Promise<RemoteLoginResult> {
+  const name = nextBandName.trim();
+  if (!name) {
+    return { ok: false, message: 'Informe o nome da banda.' };
+  }
+  const sb = getSupabase();
+  const user = await resolveAuthUser(sb);
+  if (!user) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const owned = await getOwnedBandForUserId(sb, user.id);
+  if (!owned) {
+    return { ok: false, message: 'Você ainda não tem banda como administrador.' };
+  }
+  const { error } = await sb
+    .from('bands')
+    .update({ name })
+    .eq('id', owned.id)
+    .eq('primary_owner_user_id', user.id);
+  if (error) {
+    return { ok: false, message: mapDbError(error.message) };
+  }
+  const profile = await buildPersistedProfileForUser(user);
+  if (!profile) return { ok: false, message: 'Banda atualizada, mas falhou ao carregar o perfil.' };
+  return { ok: true, profile };
+}
+
+export async function regenerateOwnedBandInviteRemote(): Promise<RemoteLoginResult> {
+  const sb = getSupabase();
+  const user = await resolveAuthUser(sb);
+  if (!user) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const owned = await getOwnedBandForUserId(sb, user.id);
+  if (!owned) {
+    return { ok: false, message: 'Você ainda não tem banda como administrador.' };
+  }
+  const MAX_TRIES = 8;
+  for (let i = 0; i < MAX_TRIES; i++) {
+    const token = newInviteToken();
+    const { error } = await sb
+      .from('bands')
+      .update({ invite_token: token })
+      .eq('id', owned.id)
+      .eq('primary_owner_user_id', user.id);
+    if (!error) {
+      const profile = await buildPersistedProfileForUser(user);
+      if (!profile) return { ok: false, message: 'Convite atualizado, mas falhou ao carregar o perfil.' };
+      return {
+        ok: true,
+        profile: { ...profile, ownedInviteToken: token },
+      };
+    }
+    if (!isInviteTokenConflictError(error)) {
+      return { ok: false, message: mapDbError(error.message) };
+    }
+  }
+  return { ok: false, message: 'Não foi possível gerar um novo código de convite agora. Tente de novo.' };
+}
+
+export async function deleteOwnedBandRemote(): Promise<RemoteLoginResult> {
+  const sb = getSupabase();
+  const user = await resolveAuthUser(sb);
+  if (!user) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const owned = await getOwnedBandForUserId(sb, user.id);
+  if (!owned) {
+    return { ok: false, message: 'Você ainda não tem banda como administrador.' };
+  }
+
+  const { error: membershipsErr } = await sb.from('band_memberships').delete().eq('band_id', owned.id);
+  if (membershipsErr) {
+    return { ok: false, message: mapDbError(membershipsErr.message) };
+  }
+  const { error: bandErr } = await sb
+    .from('bands')
+    .delete()
+    .eq('id', owned.id)
+    .eq('primary_owner_user_id', user.id);
+  if (bandErr) {
+    return { ok: false, message: mapDbError(bandErr.message) };
+  }
+  const profile = await buildPersistedProfileForUser(user);
+  if (!profile) return { ok: false, message: 'Banda removida, mas falhou ao carregar o perfil.' };
+  return { ok: true, profile };
 }
 
 export async function joinBandWithInviteRemote(userId: string, inviteToken: string): Promise<RemoteLoginResult> {
