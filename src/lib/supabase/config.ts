@@ -38,6 +38,19 @@ export function isInsecureLocalAuthAllowed(): boolean {
   return raw === '1' || raw === 'true' || raw === 'yes';
 }
 
+function envFlag(name: string): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+}
+
+export function isGoogleAuthEnabled(): boolean {
+  return isSupabaseConfigured();
+}
+
+export function isAppleAuthEnabled(): boolean {
+  return isSupabaseConfigured() && envFlag('EXPO_PUBLIC_ENABLE_APPLE_AUTH');
+}
+
 export function getSupabaseUrl(): string {
   const url = resolveUrl();
   if (!url) {

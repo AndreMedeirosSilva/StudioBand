@@ -18,8 +18,9 @@ import { COLORS } from '../theme';
 import { WEB_AUTH_SPLIT_MIN_WIDTH } from '../layout/web';
 import { loginWithPassword } from '../registry/localRegistry';
 import type { UserProfile } from '../storage/persistSession';
-import { isSupabaseConfigured } from '../lib/supabase/config';
+import { isAppleAuthEnabled, isGoogleAuthEnabled } from '../lib/supabase/config';
 import { signInWithGoogle } from '../lib/supabase/googleAuth';
+import { signInWithApple } from '../lib/supabase/appleAuth';
 import { GOOGLE_G_LOGO_URI } from '../assets/googleBrand';
 import { isValidEmail, normalizeEmail } from '../lib/auth/credentialsPolicy';
 import {
@@ -73,7 +74,10 @@ export function AuthScreen({ onGoRegister, onSuccess }: Props) {
   const [secure, setSecure] = useState(true);
   const [busy, setBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
-  const showGoogle = isSupabaseConfigured();
+  const [appleBusy, setAppleBusy] = useState(false);
+  const showGoogle = isGoogleAuthEnabled();
+  const showApple = isAppleAuthEnabled();
+  const showAnySocial = showGoogle || showApple;
 
   const horizontalPad = Math.min(28, Math.max(18, width * 0.06));
   const heroHeight = Math.min(Math.max(height * 0.36, 240), width >= 900 ? 320 : 380);
@@ -151,6 +155,29 @@ export function AuthScreen({ onGoRegister, onSuccess }: Props) {
     }
   };
 
+  const onApple = async () => {
+    setAppleBusy(true);
+    try {
+      const r = await signInWithApple();
+      if (r.kind === 'error') {
+        Alert.alert('Apple', r.message);
+        return;
+      }
+      if (r.kind === 'ok') {
+        await Promise.resolve(onSuccess(r.profile));
+        return;
+      }
+      /* redirect on web */
+    } catch (err) {
+      const m = err instanceof Error ? err.message : 'Erro inesperado com Apple.';
+      Alert.alert('Apple', m);
+    } finally {
+      if (Platform.OS !== 'web') {
+        setAppleBusy(false);
+      }
+    }
+  };
+
   const heroVisual = (
     <>
       {Platform.OS === 'web' ? (
@@ -178,40 +205,61 @@ export function AuthScreen({ onGoRegister, onSuccess }: Props) {
       {!webAuthSplit ? <View style={styles.sheetHandle} importantForAccessibility="no" /> : null}
       <Text style={styles.sheetTitle}>Entrar</Text>
       <Text style={styles.sheetSub}>
-        {showGoogle
-          ? 'Entre com Google ou com e-mail e senha. Novo utilizador? Crie conta em seguida.'
+        {showAnySocial
+          ? 'Entre com Google, Apple ou com e-mail e senha. Novo utilizador? Crie conta em seguida.'
           : Platform.OS === 'web'
-            ? 'Entre com e-mail e senha. Para segurança, o login local fica desativado sem Supabase.'
+            ? 'Entre com seu e-mail e senha para continuar.'
             : 'Use seu e-mail e senha para continuar.'}
       </Text>
 
-      {showGoogle ? (
+      {showAnySocial ? (
         <>
-          <Pressable
-            style={({ pressed }) => [
-              styles.googleBtn,
-              (googleBusy || pressed) && styles.pressed,
-              googleBusy && styles.primaryBusy,
-            ]}
-            onPress={() => void onGoogle()}
-            disabled={googleBusy || busy}
-            accessibilityRole="button"
-            accessibilityLabel="Continuar com Google"
-          >
-            {googleBusy ? (
-              <ActivityIndicator color={COLORS.text} />
-            ) : (
-              <View style={styles.googleBtnInner}>
-                <Image
-                  source={{ uri: GOOGLE_G_LOGO_URI }}
-                  style={styles.googleMark}
-                  contentFit="contain"
-                  accessibilityIgnoresInvertColors
-                />
-                <Text style={styles.googleBtnText}>Continuar com Google</Text>
-              </View>
-            )}
-          </Pressable>
+          {showGoogle ? (
+            <Pressable
+              style={({ pressed }) => [
+                styles.googleBtn,
+                (googleBusy || pressed) && styles.pressed,
+                googleBusy && styles.primaryBusy,
+              ]}
+              onPress={() => void onGoogle()}
+              disabled={googleBusy || busy}
+              accessibilityRole="button"
+              accessibilityLabel="Continuar com Google"
+            >
+              {googleBusy ? (
+                <ActivityIndicator color={COLORS.text} />
+              ) : (
+                <View style={styles.googleBtnInner}>
+                  <Image
+                    source={{ uri: GOOGLE_G_LOGO_URI }}
+                    style={styles.googleMark}
+                    contentFit="contain"
+                    accessibilityIgnoresInvertColors
+                  />
+                  <Text style={styles.googleBtnText}>Continuar com Google</Text>
+                </View>
+              )}
+            </Pressable>
+          ) : null}
+          {showApple ? (
+            <Pressable
+              style={({ pressed }) => [
+                styles.appleBtn,
+                (appleBusy || pressed) && styles.pressed,
+                appleBusy && styles.primaryBusy,
+              ]}
+              onPress={() => void onApple()}
+              disabled={appleBusy || busy || googleBusy}
+              accessibilityRole="button"
+              accessibilityLabel="Continuar com Apple"
+            >
+              {appleBusy ? (
+                <ActivityIndicator color={COLORS.text} />
+              ) : (
+                <Text style={styles.appleBtnText}>Continuar com Apple</Text>
+              )}
+            </Pressable>
+          ) : null}
           <View style={styles.dividerRow}>
             <View style={styles.dividerLine} />
             <Text style={styles.dividerText}>ou com e-mail</Text>
@@ -264,7 +312,7 @@ export function AuthScreen({ onGoRegister, onSuccess }: Props) {
                 busy && styles.primaryBusy,
               ]}
               onPress={() => void submit()}
-              disabled={busy || googleBusy}
+              disabled={busy || googleBusy || appleBusy}
               accessibilityRole="button"
               accessibilityState={{ busy }}
             >
@@ -426,6 +474,22 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     paddingVertical: 15,
     paddingHorizontal: 18,
+  },
+  appleBtn: {
+    marginBottom: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#111111',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    paddingVertical: 15,
+    paddingHorizontal: 18,
+  },
+  appleBtnText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
   },
   googleBtnInner: {
     flexDirection: 'row',
