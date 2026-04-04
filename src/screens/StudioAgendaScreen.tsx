@@ -10,6 +10,7 @@ import {
   TextInput,
   Alert,
   Platform,
+  Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MonthCalendar } from '../components/MonthCalendar';
@@ -52,10 +53,16 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
   const [selectedDate, setSelectedDate] = useState(() => today);
   const [viewYear, setViewYear] = useState(() => today.getFullYear());
   const [viewMonth, setViewMonth] = useState(() => today.getMonth());
-  const [priceDraft, setPriceDraft] = useState(String(ownerStudio.pricePerHour));
   const [blockStart, setBlockStart] = useState(12 * 60);
   const [blockEnd, setBlockEnd] = useState(13 * 60 + 30);
   const [roomId, setRoomId] = useState(() => ownerStudio.rooms[0]?.id ?? '');
+  const [priceDraft, setPriceDraft] = useState('0');
+  const [roomModalOpen, setRoomModalOpen] = useState(false);
+  const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
+  const [roomNameDraft, setRoomNameDraft] = useState('');
+  const [roomCapacityDraft, setRoomCapacityDraft] = useState('8');
+  const [roomPriceDraft, setRoomPriceDraft] = useState('90');
+  const [roomPhotosDraft, setRoomPhotosDraft] = useState('');
 
   const dateKey = toDateKey(selectedDate);
 
@@ -64,16 +71,18 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
       id: profile.ownerStudioId ?? 'local-studio',
       name: profile.studioName ?? '',
       city: '',
-      pricePerHour: 0,
+      addressLine: ownerStudio.addressLine ?? '',
+      pricePerHour: ownerStudio.rooms.find((r) => r.id === roomId)?.pricePerHour ?? ownerStudio.pricePerHour,
       isMine: true,
       logoUri: ownerStudio.logoUri,
     }),
-    [profile.ownerStudioId, profile.studioName, ownerStudio.logoUri],
+    [profile.ownerStudioId, profile.studioName, ownerStudio.addressLine, ownerStudio.logoUri, ownerStudio.pricePerHour, ownerStudio.rooms, roomId],
   );
 
   useEffect(() => {
-    setPriceDraft(String(ownerStudio.pricePerHour));
-  }, [ownerStudio.pricePerHour, profile.ownerStudioId]);
+    const selected = ownerStudio.rooms.find((r) => r.id === roomId);
+    setPriceDraft(String(selected?.pricePerHour ?? ownerStudio.pricePerHour));
+  }, [ownerStudio.pricePerHour, ownerStudio.rooms, profile.ownerStudioId, roomId]);
 
   useEffect(() => {
     const ids = ownerStudio.rooms.map((r) => r.id);
@@ -125,11 +134,89 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
 
   const commitPrice = () => {
     const n = parseFloat(priceDraft.replace(',', '.'));
+    if (!roomId) return;
     if (Number.isFinite(n) && n >= 0) {
-      setOwnerStudio((s) => ({ ...s, pricePerHour: n }));
+      setOwnerStudio((s) => ({
+        ...s,
+        rooms: s.rooms.map((room) => (room.id === roomId ? { ...room, pricePerHour: n } : room)),
+      }));
     } else {
-      setPriceDraft(String(ownerStudio.pricePerHour));
+      const selected = ownerStudio.rooms.find((r) => r.id === roomId);
+      setPriceDraft(String(selected?.pricePerHour ?? ownerStudio.pricePerHour));
     }
+  };
+
+  const openCreateRoom = () => {
+    setEditingRoomId(null);
+    setRoomNameDraft('');
+    setRoomCapacityDraft('8');
+    setRoomPriceDraft(String(ownerStudio.pricePerHour || 90));
+    setRoomPhotosDraft('');
+    setRoomModalOpen(true);
+  };
+
+  const openEditRoom = () => {
+    const current = ownerStudio.rooms.find((r) => r.id === roomId);
+    if (!current) return;
+    setEditingRoomId(current.id);
+    setRoomNameDraft(current.name);
+    setRoomCapacityDraft(String(current.capacityPeople));
+    setRoomPriceDraft(String(current.pricePerHour));
+    setRoomPhotosDraft((current.photoUris ?? []).join('\n'));
+    setRoomModalOpen(true);
+  };
+
+  const saveRoom = () => {
+    const name = roomNameDraft.trim();
+    const cap = parseInt(roomCapacityDraft, 10);
+    const price = parseFloat(roomPriceDraft.replace(',', '.'));
+    if (!name) {
+      Alert.alert('Sala', 'Informe o nome da sala.');
+      return;
+    }
+    if (!Number.isFinite(cap) || cap <= 0) {
+      Alert.alert('Sala', 'Informe uma capacidade válida.');
+      return;
+    }
+    if (!Number.isFinite(price) || price < 0) {
+      Alert.alert('Sala', 'Informe um preço por hora válido.');
+      return;
+    }
+    const photos = roomPhotosDraft
+      .split('\n')
+      .map((x) => x.trim())
+      .filter((x) => /^https?:\/\//i.test(x));
+    const nextId = editingRoomId ? null : `${profile.ownerStudioId ?? 'studio'}-room-${Date.now().toString(36)}`;
+    setOwnerStudio((s) => {
+      if (editingRoomId) {
+        return {
+          ...s,
+          rooms: s.rooms.map((room) =>
+            room.id === editingRoomId ? { ...room, name, capacityPeople: cap, pricePerHour: price, photoUris: photos } : room,
+          ),
+        };
+      }
+      return {
+        ...s,
+        rooms: [...s.rooms, { id: nextId as string, name, capacityPeople: cap, pricePerHour: price, photoUris: photos }],
+      };
+    });
+    if (nextId) setRoomId(nextId);
+    setRoomModalOpen(false);
+  };
+
+  const deleteRoom = () => {
+    if (!roomId) return;
+    Alert.alert('Excluir sala', 'Deseja remover esta sala?', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Excluir',
+        style: 'destructive',
+        onPress: () => {
+          setOwnerStudio((s) => ({ ...s, rooms: s.rooms.filter((room) => room.id !== roomId) }));
+        },
+      },
+    ]);
   };
 
   const addBlock = () => {
@@ -175,6 +262,7 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
     );
   };
 
+  const selectedRoom = ownerStudio.rooms.find((r) => r.id === roomId);
   const priceHint = Number.parseFloat(priceDraft.replace(',', '.')) || 0;
 
   return (
@@ -206,12 +294,28 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
 
         <View style={styles.studioTitleBlock}>
           <Text style={styles.studioName}>{profile.studioName ?? 'Seu estúdio'}</Text>
+          {ownerStudio.addressLine ? <Text style={styles.studioAddress}>{ownerStudio.addressLine}</Text> : null}
           <Text style={styles.sub}>
             Escolha a sala (capacidade em destaque; fotos abaixo). Reservas (verde) e bloqueios (vermelho) são por sala.
           </Text>
         </View>
 
         <Text style={[styles.section, { marginTop: 4, marginBottom: 8 }]}>Salas</Text>
+        <View style={styles.roomToolbar}>
+          <Pressable onPress={openCreateRoom} style={({ pressed }) => [styles.roomToolbarBtn, pressed && styles.pressed]} accessibilityRole="button">
+            <Text style={styles.roomToolbarBtnText}>Nova sala</Text>
+          </Pressable>
+          {selectedRoom ? (
+            <>
+              <Pressable onPress={openEditRoom} style={({ pressed }) => [styles.roomToolbarBtn, pressed && styles.pressed]} accessibilityRole="button">
+                <Text style={styles.roomToolbarBtnText}>Editar sala</Text>
+              </Pressable>
+              <Pressable onPress={deleteRoom} style={({ pressed }) => [styles.roomToolbarBtnDanger, pressed && styles.pressed]} accessibilityRole="button">
+                <Text style={styles.roomToolbarBtnDangerText}>Excluir sala</Text>
+              </Pressable>
+            </>
+          ) : null}
+        </View>
         {ownerStudio.rooms.length === 0 ? (
           <Text style={[styles.muted, { marginBottom: 14 }]}>Ainda não há salas cadastradas neste estúdio.</Text>
         ) : (
@@ -252,7 +356,7 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
           </View>
         ) : null}
 
-        <Text style={styles.label}>Preço por hora (R$)</Text>
+        <Text style={styles.label}>Preço da sala selecionada (R$/h)</Text>
         <TextInput
           style={styles.priceInput}
           value={priceDraft}
@@ -349,6 +453,51 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
           )}
         </View>
       </ScrollView>
+      <Modal visible={roomModalOpen} transparent animationType="fade" onRequestClose={() => setRoomModalOpen(false)}>
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setRoomModalOpen(false)} accessibilityRole="button" />
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{editingRoomId ? 'Editar sala' : 'Cadastrar sala'}</Text>
+            <Text style={styles.label}>Nome da sala</Text>
+            <TextInput style={styles.priceInput} value={roomNameDraft} onChangeText={setRoomNameDraft} placeholder="Ex.: Sala Premium" placeholderTextColor={COLORS.muted} />
+            <Text style={[styles.label, { marginTop: 10 }]}>Capacidade</Text>
+            <TextInput
+              style={styles.priceInput}
+              value={roomCapacityDraft}
+              onChangeText={setRoomCapacityDraft}
+              keyboardType="number-pad"
+              placeholder="8"
+              placeholderTextColor={COLORS.muted}
+            />
+            <Text style={[styles.label, { marginTop: 10 }]}>Preço por hora (R$)</Text>
+            <TextInput
+              style={styles.priceInput}
+              value={roomPriceDraft}
+              onChangeText={setRoomPriceDraft}
+              keyboardType="decimal-pad"
+              placeholder="90"
+              placeholderTextColor={COLORS.muted}
+            />
+            <Text style={[styles.label, { marginTop: 10 }]}>Fotos da sala (um link por linha)</Text>
+            <TextInput
+              style={styles.photosInput}
+              value={roomPhotosDraft}
+              onChangeText={setRoomPhotosDraft}
+              multiline
+              placeholder="https://...\nhttps://..."
+              placeholderTextColor={COLORS.muted}
+            />
+            <View style={styles.modalActions}>
+              <Pressable onPress={() => setRoomModalOpen(false)} style={({ pressed }) => [styles.roomToolbarBtn, pressed && styles.pressed]} accessibilityRole="button">
+                <Text style={styles.roomToolbarBtnText}>Cancelar</Text>
+              </Pressable>
+              <Pressable onPress={saveRoom} style={({ pressed }) => [styles.addBtn, pressed && styles.pressed]} accessibilityRole="button">
+                <Text style={styles.addBtnText}>Salvar sala</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -377,7 +526,40 @@ const styles = StyleSheet.create({
   topTitle: { fontSize: 17, fontWeight: '800', color: COLORS.text },
   studioTitleBlock: { marginTop: 14, marginBottom: 4 },
   studioName: { fontSize: 22, fontWeight: '800', color: COLORS.text, marginBottom: 8 },
+  studioAddress: { fontSize: 14, color: COLORS.accent, marginBottom: 8, lineHeight: 20 },
   sub: { fontSize: 14, color: COLORS.muted, lineHeight: 21, marginBottom: 14 },
+  roomToolbar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 10,
+  },
+  roomToolbarBtn: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.card,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  roomToolbarBtnText: {
+    color: COLORS.text,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  roomToolbarBtnDanger: {
+    borderWidth: 1,
+    borderColor: 'rgba(255,122,155,0.45)',
+    backgroundColor: 'rgba(255,122,155,0.14)',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  roomToolbarBtnDangerText: {
+    color: COLORS.danger,
+    fontSize: 13,
+    fontWeight: '800',
+  },
   roomPickRow: { flexDirection: 'row', gap: 18, paddingVertical: 8, marginBottom: 18, paddingRight: 12 },
   roomPickCard: {
     width: 140,
@@ -479,5 +661,48 @@ const styles = StyleSheet.create({
   bookingTime: { fontSize: 14, fontWeight: '800', color: COLORS.accent, minWidth: 120 },
   bookingBand: { fontSize: 16, fontWeight: '600', color: COLORS.text },
   bookingStatus: { marginTop: 2, fontSize: 13, color: COLORS.muted },
+  modalRoot: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.68)',
+  },
+  modalCard: {
+    backgroundColor: COLORS.bg,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 16,
+    maxWidth: 460,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.text,
+    marginBottom: 10,
+  },
+  photosInput: {
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: Platform.select({ ios: 12, default: 10 }),
+    fontSize: 14,
+    color: COLORS.text,
+    minHeight: 96,
+    textAlignVertical: 'top',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 12,
+  },
   pressed: { opacity: 0.9 },
 });

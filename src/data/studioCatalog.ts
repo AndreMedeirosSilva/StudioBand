@@ -29,6 +29,8 @@ export const DEMO_OWNER_LOGO_URI = IMG.logoStudio;
 export type StudioRoom = {
   id: string;
   name: string;
+  /** Preço por hora desta sala (R$). */
+  pricePerHour: number;
   /** Capacidade máxima recomendada (pessoas na sala). */
   capacityPeople: number;
   /** Fotos da sala (URLs remotas ou `file://` no dispositivo). */
@@ -53,7 +55,10 @@ export type DemoBooking = {
 };
 
 export type OwnerStudioState = {
+  /** Compat: preço legado do estúdio inteiro (fallback). */
   pricePerHour: number;
+  /** Endereço completo do estúdio. */
+  addressLine: string;
   /** Logo do estúdio (URL ou ficheiro local). */
   logoUri: string | null;
   /** Salas do estúdio (dono). */
@@ -68,18 +73,21 @@ export function defaultOwnerRooms(ownerStudioId: string): StudioRoom[] {
     {
       id: `${ownerStudioId}-sala-a`,
       name: 'Sala A (ensaios)',
+      pricePerHour: 95,
       capacityPeople: 12,
       photoUris: [IMG.roomDrums, IMG.roomGuitar, IMG.roomAmp],
     },
     {
       id: `${ownerStudioId}-sala-b`,
       name: 'Sala B (gravação)',
+      pricePerHour: 120,
       capacityPeople: 6,
       photoUris: [IMG.roomMixer, IMG.roomMic, IMG.roomBooth],
     },
     {
       id: `${ownerStudioId}-sala-c`,
       name: 'Sala C (rehearsal)',
+      pricePerHour: 85,
       capacityPeople: 8,
       photoUris: [IMG.roomKeys, IMG.roomDark],
     },
@@ -89,10 +97,31 @@ export function defaultOwnerRooms(ownerStudioId: string): StudioRoom[] {
 export function emptyOwnerStudioState(): OwnerStudioState {
   return {
     pricePerHour: 90,
+    addressLine: '',
     logoUri: null,
     rooms: [],
     blockedRangesByRoomDate: {},
     bookings: [],
+  };
+}
+
+export function normalizeOwnerStudioState(input: OwnerStudioState): OwnerStudioState {
+  const rooms = Array.isArray(input.rooms)
+    ? input.rooms
+        .map((room) => {
+          const value = room as StudioRoom & { pricePerHour?: number };
+          return {
+            ...room,
+            pricePerHour: typeof value.pricePerHour === 'number' && value.pricePerHour >= 0 ? value.pricePerHour : input.pricePerHour,
+            photoUris: Array.isArray(room.photoUris) ? room.photoUris.filter((u) => typeof u === 'string' && u.trim().length > 0) : [],
+          };
+        })
+        .filter((room) => room.name.trim().length > 0)
+    : [];
+  return {
+    ...input,
+    addressLine: typeof (input as OwnerStudioState & { addressLine?: string }).addressLine === 'string' ? input.addressLine : '',
+    rooms,
   };
 }
 
@@ -168,8 +197,8 @@ export const PUBLIC_CATALOG_STUDIOS: PublicCatalogStudio[] = [
     pricePerHour: 85,
     logoUri: IMG.logoVinyl,
     rooms: [
-      { id: 'pub-1-s1', name: 'Sala Grande', capacityPeople: 15, photoUris: [IMG.roomDrums, IMG.roomKeys, IMG.roomAmp] },
-      { id: 'pub-1-s2', name: 'Sala Íntima', capacityPeople: 5, photoUris: [IMG.roomGuitar, IMG.roomMic] },
+      { id: 'pub-1-s1', name: 'Sala Grande', pricePerHour: 95, capacityPeople: 15, photoUris: [IMG.roomDrums, IMG.roomKeys, IMG.roomAmp] },
+      { id: 'pub-1-s2', name: 'Sala Íntima', pricePerHour: 78, capacityPeople: 5, photoUris: [IMG.roomGuitar, IMG.roomMic] },
     ],
   },
   {
@@ -179,9 +208,9 @@ export const PUBLIC_CATALOG_STUDIOS: PublicCatalogStudio[] = [
     pricePerHour: 95,
     logoUri: IMG.logoNeon,
     rooms: [
-      { id: 'pub-2-s1', name: 'Estúdio A', capacityPeople: 10, photoUris: [IMG.roomMixer, IMG.roomDrums] },
-      { id: 'pub-2-s2', name: 'Estúdio B', capacityPeople: 8, photoUris: [IMG.roomBooth, IMG.roomDark] },
-      { id: 'pub-2-s3', name: 'Cabine voz', capacityPeople: 3, photoUris: [IMG.roomMic, IMG.roomMixer] },
+      { id: 'pub-2-s1', name: 'Estúdio A', pricePerHour: 105, capacityPeople: 10, photoUris: [IMG.roomMixer, IMG.roomDrums] },
+      { id: 'pub-2-s2', name: 'Estúdio B', pricePerHour: 95, capacityPeople: 8, photoUris: [IMG.roomBooth, IMG.roomDark] },
+      { id: 'pub-2-s3', name: 'Cabine voz', pricePerHour: 70, capacityPeople: 3, photoUris: [IMG.roomMic, IMG.roomMixer] },
     ],
   },
   {
@@ -191,8 +220,8 @@ export const PUBLIC_CATALOG_STUDIOS: PublicCatalogStudio[] = [
     pricePerHour: 70,
     logoUri: IMG.logoStudio,
     rooms: [
-      { id: 'pub-3-s1', name: 'Box 1', capacityPeople: 6, photoUris: [IMG.roomAmp, IMG.roomDrums] },
-      { id: 'pub-3-s2', name: 'Box 2', capacityPeople: 6, photoUris: [IMG.roomGuitar, IMG.roomKeys] },
+      { id: 'pub-3-s1', name: 'Box 1', pricePerHour: 70, capacityPeople: 6, photoUris: [IMG.roomAmp, IMG.roomDrums] },
+      { id: 'pub-3-s2', name: 'Box 2', pricePerHour: 70, capacityPeople: 6, photoUris: [IMG.roomGuitar, IMG.roomKeys] },
     ],
   },
   {
@@ -202,9 +231,9 @@ export const PUBLIC_CATALOG_STUDIOS: PublicCatalogStudio[] = [
     pricePerHour: 110,
     logoUri: IMG.logoNeon,
     rooms: [
-      { id: 'pub-4-s1', name: 'Live room', capacityPeople: 18, photoUris: [IMG.roomDrums, IMG.roomAmp, IMG.roomMixer] },
-      { id: 'pub-4-s2', name: 'Booth', capacityPeople: 4, photoUris: [IMG.roomBooth, IMG.roomMic] },
-      { id: 'pub-4-s3', name: 'Ensaio secos', capacityPeople: 7, photoUris: [IMG.roomKeys, IMG.roomGuitar] },
+      { id: 'pub-4-s1', name: 'Live room', pricePerHour: 130, capacityPeople: 18, photoUris: [IMG.roomDrums, IMG.roomAmp, IMG.roomMixer] },
+      { id: 'pub-4-s2', name: 'Booth', pricePerHour: 85, capacityPeople: 4, photoUris: [IMG.roomBooth, IMG.roomMic] },
+      { id: 'pub-4-s3', name: 'Ensaio secos', pricePerHour: 98, capacityPeople: 7, photoUris: [IMG.roomKeys, IMG.roomGuitar] },
     ],
   },
   {
@@ -214,8 +243,8 @@ export const PUBLIC_CATALOG_STUDIOS: PublicCatalogStudio[] = [
     pricePerHour: 78,
     logoUri: IMG.logoVinyl,
     rooms: [
-      { id: 'pub-5-s1', name: 'Sala 1', capacityPeople: 9, photoUris: [IMG.roomDark, IMG.roomDrums] },
-      { id: 'pub-5-s2', name: 'Sala 2', capacityPeople: 9, photoUris: [IMG.roomMixer, IMG.roomAmp] },
+      { id: 'pub-5-s1', name: 'Sala 1', pricePerHour: 78, capacityPeople: 9, photoUris: [IMG.roomDark, IMG.roomDrums] },
+      { id: 'pub-5-s2', name: 'Sala 2', pricePerHour: 78, capacityPeople: 9, photoUris: [IMG.roomMixer, IMG.roomAmp] },
     ],
   },
   {
@@ -225,9 +254,9 @@ export const PUBLIC_CATALOG_STUDIOS: PublicCatalogStudio[] = [
     pricePerHour: 65,
     logoUri: IMG.logoStudio,
     rooms: [
-      { id: 'pub-6-s1', name: 'Estúdio principal', capacityPeople: 11, photoUris: [IMG.roomMixer, IMG.roomDrums, IMG.roomKeys] },
-      { id: 'pub-6-s2', name: 'Mini sala', capacityPeople: 4, photoUris: [IMG.roomGuitar, IMG.roomMic] },
-      { id: 'pub-6-s3', name: 'Podcast corner', capacityPeople: 5, photoUris: [IMG.roomBooth, IMG.roomMic] },
+      { id: 'pub-6-s1', name: 'Estúdio principal', pricePerHour: 75, capacityPeople: 11, photoUris: [IMG.roomMixer, IMG.roomDrums, IMG.roomKeys] },
+      { id: 'pub-6-s2', name: 'Mini sala', pricePerHour: 55, capacityPeople: 4, photoUris: [IMG.roomGuitar, IMG.roomMic] },
+      { id: 'pub-6-s3', name: 'Podcast corner', pricePerHour: 60, capacityPeople: 5, photoUris: [IMG.roomBooth, IMG.roomMic] },
     ],
   },
 ];
@@ -236,6 +265,7 @@ export type BookingStudioRow = {
   id: string;
   name: string;
   city: string;
+  addressLine: string | null;
   pricePerHour: number;
   isMine: boolean;
   logoUri: string | null;
@@ -249,6 +279,7 @@ export function listStudiosForBooking(
     id: s.id,
     name: s.name,
     city: s.city,
+    addressLine: s.city,
     pricePerHour: s.pricePerHour,
     isMine: false,
     logoUri: s.logoUri,
@@ -257,8 +288,9 @@ export function listStudiosForBooking(
     rows.unshift({
       id: profile.ownerStudioId,
       name: profile.studioName,
-      city: 'Meu estúdio',
-      pricePerHour: 0,
+      city: owner.addressLine || 'Meu estúdio',
+      addressLine: owner.addressLine || null,
+      pricePerHour: owner.rooms[0]?.pricePerHour ?? owner.pricePerHour,
       isMine: true,
       logoUri: owner.logoUri,
     });
@@ -270,10 +302,10 @@ export function listStudiosForBooking(
 export function getRoomsForStudioRow(row: BookingStudioRow, owner: OwnerStudioState): StudioRoom[] {
   if (row.isMine) {
     if (owner.rooms.length > 0) return owner.rooms;
-    return [{ id: `${row.id}-sala`, name: 'Sala principal', capacityPeople: 8 }];
+    return [{ id: `${row.id}-sala`, name: 'Sala principal', pricePerHour: owner.pricePerHour, capacityPeople: 8 }];
   }
   const cat = PUBLIC_CATALOG_STUDIOS.find((s) => s.id === row.id);
-  return cat?.rooms ?? [{ id: `${row.id}-sala`, name: 'Sala 1', capacityPeople: 6 }];
+  return cat?.rooms ?? [{ id: `${row.id}-sala`, name: 'Sala 1', pricePerHour: row.pricePerHour, capacityPeople: 6 }];
 }
 
 function strHash(s: string): number {
@@ -396,8 +428,14 @@ export function isRangeAvailable(
   return !rangeOverlapsAny(proposal, getBusyRangesForDay(row, roomId, dateKey, owner));
 }
 
-export function effectivePricePerHour(row: BookingStudioRow, owner: OwnerStudioState): number {
-  if (row.isMine) return owner.pricePerHour;
+export function effectivePricePerHour(row: BookingStudioRow, owner: OwnerStudioState, roomId?: string): number {
+  if (row.isMine) {
+    if (roomId) {
+      const room = owner.rooms.find((r) => r.id === roomId);
+      if (room) return room.pricePerHour;
+    }
+    return owner.rooms[0]?.pricePerHour ?? owner.pricePerHour;
+  }
   return row.pricePerHour;
 }
 

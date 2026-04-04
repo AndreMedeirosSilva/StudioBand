@@ -21,6 +21,7 @@ import { buildInviteUrl } from '../lib/inviteLink';
 import { COLORS } from '../theme';
 import { LoggedInUserBar } from '../components/LoggedInUserBar';
 import type { UserProfile } from '../navigation/AppNavigator';
+import type { OwnerStudioState } from '../data/studioCatalog';
 import {
   createOwnedBand,
   deleteOwnedBand,
@@ -40,6 +41,7 @@ import {
 
 type Props = {
   profile: UserProfile;
+  ownerStudio: OwnerStudioState;
   onBook: () => void;
   onStudioAgenda: () => void;
   onLogout: () => void;
@@ -47,6 +49,7 @@ type Props = {
   joinCodePrefill?: string | null;
   onConsumeJoinPrefill?: () => void;
   onProfileUpdate: (profile: UserProfile) => void;
+  onUpsertStudio: (input: { studioName: string; addressLine: string; photoUrl: string | null }) => void;
 };
 
 /** Dados de exemplo no painel (sem API). */
@@ -61,12 +64,14 @@ const MOCK_ACTIVITY_ROWS = [
 
 export function HomeScreen({
   profile,
+  ownerStudio,
   onBook,
   onStudioAgenda,
   onLogout,
   joinCodePrefill,
   onConsumeJoinPrefill,
   onProfileUpdate,
+  onUpsertStudio,
 }: Props) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -97,6 +102,10 @@ export function HomeScreen({
   const [editBandPhotoUrl, setEditBandPhotoUrl] = useState('');
   const [editBandId, setEditBandId] = useState<string | null>(null);
   const [bandCrudBusy, setBandCrudBusy] = useState(false);
+  const [studioFormOpen, setStudioFormOpen] = useState(false);
+  const [studioNameDraft, setStudioNameDraft] = useState('');
+  const [studioAddressDraft, setStudioAddressDraft] = useState('');
+  const [studioPhotoDraft, setStudioPhotoDraft] = useState('');
 
   useEffect(() => {
     if (!profile.userId) {
@@ -152,6 +161,12 @@ export function HomeScreen({
     return () => clearTimeout(id);
   }, [joinCode]);
 
+  useEffect(() => {
+    setStudioNameDraft(profile.studioName ?? '');
+    setStudioAddressDraft(ownerStudio.addressLine ?? '');
+    setStudioPhotoDraft(ownerStudio.logoUri ?? '');
+  }, [profile.studioName, ownerStudio.addressLine, ownerStudio.logoUri]);
+
   const refreshBandData = useCallback(async () => {
     if (!profile.userId) return;
     const [rows, owned] = await Promise.all([listBandsDetailForUser(profile.userId), listOwnedBandsForUser(profile.userId)]);
@@ -184,6 +199,28 @@ export function HomeScreen({
     },
     [normalizePhotoUrl, onProfileUpdate, profile.userId, refreshBandData],
   );
+
+  const submitStudioProfile = useCallback(() => {
+    const name = studioNameDraft.trim();
+    const address = studioAddressDraft.trim();
+    if (!name) {
+      Alert.alert('Estúdio', 'Informe o nome do estúdio.');
+      return;
+    }
+    if (!address) {
+      Alert.alert('Estúdio', 'Informe o endereço do estúdio.');
+      return;
+    }
+    const rawPhoto = studioPhotoDraft.trim();
+    const normalizedPhoto = rawPhoto.length > 0 ? (/^https?:\/\//i.test(rawPhoto) ? rawPhoto : null) : null;
+    if (rawPhoto.length > 0 && !normalizedPhoto) {
+      Alert.alert('Estúdio', 'A foto precisa ser um link começando com http:// ou https://.');
+      return;
+    }
+    onUpsertStudio({ studioName: name, addressLine: address, photoUrl: normalizedPhoto });
+    setStudioFormOpen(false);
+    Alert.alert('Estúdio salvo', 'Cadastro do estúdio atualizado com sucesso.');
+  }, [onUpsertStudio, studioAddressDraft, studioNameDraft, studioPhotoDraft]);
 
   const toggleBandMembers = useCallback(
     async (bandId: string) => {
@@ -1075,11 +1112,65 @@ export function HomeScreen({
 
         <Text style={styles.section}>Estúdio</Text>
         <View style={styles.card}>
-          {profile.studioName ? (
-            <Text style={styles.roleLine}>{profile.studioName}</Text>
-          ) : (
-            <Text style={styles.muted}>Cadastre-se como dono de estúdio para gerir agenda e salas.</Text>
-          )}
+          {ownerStudio.logoUri ? <Image source={{ uri: ownerStudio.logoUri }} style={styles.studioThumb} /> : null}
+          {profile.studioName ? <Text style={styles.roleLine}>{profile.studioName}</Text> : null}
+          {ownerStudio.addressLine ? <Text style={styles.muted}>{ownerStudio.addressLine}</Text> : null}
+          {!profile.studioName ? (
+            <Text style={styles.muted}>Cadastre seu estúdio com endereço, foto e salas com preço individual.</Text>
+          ) : null}
+          <View style={styles.studioActionsRow}>
+            <Pressable
+              onPress={() => setStudioFormOpen((prev) => !prev)}
+              style={({ pressed }) => [styles.secondaryMiniBtn, pressed && styles.pressed]}
+              accessibilityRole="button"
+            >
+              <Text style={styles.secondaryMiniBtnText}>{studioFormOpen ? 'Fechar cadastro' : profile.studioName ? 'Editar cadastro' : 'Cadastrar estúdio'}</Text>
+            </Pressable>
+            {profile.studioName ? (
+              <Pressable
+                onPress={onStudioAgenda}
+                style={({ pressed }) => [styles.secondaryMiniBtn, pressed && styles.pressed]}
+                accessibilityRole="button"
+              >
+                <Text style={styles.secondaryMiniBtnText}>Gerenciar salas</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {studioFormOpen ? (
+            <View style={styles.studioFormWrap}>
+              <Text style={styles.modalFieldLabel}>Nome do estúdio</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="Ex.: Estúdio Aurora"
+                placeholderTextColor={COLORS.muted}
+                value={studioNameDraft}
+                onChangeText={setStudioNameDraft}
+              />
+              <Text style={styles.modalFieldLabel}>Endereço completo</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="Rua, número, bairro, cidade"
+                placeholderTextColor={COLORS.muted}
+                value={studioAddressDraft}
+                onChangeText={setStudioAddressDraft}
+              />
+              <Text style={styles.modalFieldLabel}>Link da foto do estúdio (opcional)</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="https://..."
+                placeholderTextColor={COLORS.muted}
+                value={studioPhotoDraft}
+                onChangeText={setStudioPhotoDraft}
+              />
+              <Pressable
+                onPress={submitStudioProfile}
+                style={({ pressed }) => [styles.registerBandBtn, pressed && styles.pressed]}
+                accessibilityRole="button"
+              >
+                <Text style={styles.registerBandBtnText}>Salvar estúdio</Text>
+              </Pressable>
+            </View>
+          ) : null}
         </View>
 
         <Text style={styles.section}>Resumo (demonstração)</Text>
@@ -1906,6 +1997,40 @@ const styles = StyleSheet.create({
       web: { boxShadow: '0 10px 22px rgba(0,0,0,0.18)' },
       default: {},
     }),
+  },
+  studioThumb: {
+    width: '100%',
+    height: 148,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bgElevated,
+  },
+  studioActionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  secondaryMiniBtn: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bgElevated,
+    borderRadius: 10,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+  },
+  secondaryMiniBtnText: {
+    color: COLORS.text,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  studioFormWrap: {
+    marginTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: COLORS.border,
+    paddingTop: 12,
   },
   roleLine: { fontSize: 16, color: COLORS.text, fontWeight: '600', marginBottom: 8 },
   muted: { fontSize: 15, color: COLORS.muted, lineHeight: 22 },

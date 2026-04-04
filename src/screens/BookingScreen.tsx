@@ -98,7 +98,7 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
   }, [roomsList, roomId]);
 
   const selectedRoom = roomsList.find((r) => r.id === roomId);
-  const price = studio ? effectivePricePerHour(studio, ownerStudio) : 0;
+  const price = studio ? effectivePricePerHour(studio, ownerStudio, roomId || undefined) : 0;
 
   const segments = useMemo(
     () =>
@@ -247,7 +247,7 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
                       )}
                     </View>
                     <Text style={styles.studioName}>{s.name}</Text>
-                    <Text style={styles.studioCity}>{s.city}</Text>
+                    <Text style={styles.studioCity}>{s.addressLine || s.city}</Text>
                     <View style={styles.studioMetaRow}>
                       <Text style={styles.studioPrice}>{ph > 0 ? `R$ ${ph.toFixed(0)}/hora` : 'Seu estúdio'}</Text>
                       <View style={styles.salaPill}>
@@ -297,6 +297,9 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
                     <View style={styles.roomCardBody}>
                       <Text style={styles.roomCardName}>{room.name}</Text>
                       <Text style={styles.roomCapacity}>{formatRoomCapacity(room.capacityPeople)}</Text>
+                      <Text style={styles.roomCardPrice}>
+                        {room.pricePerHour > 0 ? `R$ ${room.pricePerHour.toFixed(2)}/hora` : 'Preço sob consulta'}
+                      </Text>
                       <Text style={styles.roomCardHint}>Ver calendário e marcar</Text>
                     </View>
                     <Text style={styles.roomChevron}>›</Text>
@@ -389,6 +392,7 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
                   )}
                   <View style={styles.contextBannerText}>
                     <Text style={styles.contextBannerStudio}>{studio.name}</Text>
+                    <Text style={styles.contextBannerStudio}>{studio.addressLine || studio.city}</Text>
                     <Text style={styles.contextBannerRoom}>{selectedRoom.name}</Text>
                     <Text style={styles.contextBannerCap}>{formatRoomCapacity(selectedRoom.capacityPeople)}</Text>
                   </View>
@@ -698,6 +702,7 @@ const styles = StyleSheet.create({
   roomCardBody: { flex: 1, minWidth: 0 },
   roomCardName: { fontSize: 17, fontWeight: '800', color: COLORS.text },
   roomCapacity: { marginTop: 6, fontSize: 15, fontWeight: '700', color: COLORS.accent },
+  roomCardPrice: { marginTop: 5, fontSize: 13, color: COLORS.text, fontWeight: '700' },
   roomCardHint: { marginTop: 4, fontSize: 13, color: COLORS.muted },
   roomChevron: { fontSize: 28, fontWeight: '300', color: COLORS.muted, marginLeft: 8 },
   contextBanner: {
