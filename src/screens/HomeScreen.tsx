@@ -237,7 +237,7 @@ export function HomeScreen({
       Alert.alert(
         'Banda criada',
         token
-          ? `${nome}\n\nCódigo de convite (guardado na sessão):\n${token}\n\nO link completo aparece no painel abaixo.`
+          ? `${nome}\n\nCódigo de convite:\n${token}\n\nVocê encontra os detalhes no painel abaixo.`
           : `${nome}\n\nO link de convite aparece no painel abaixo.`,
       );
     } finally {
@@ -248,10 +248,7 @@ export function HomeScreen({
   const applyJoinBand = useCallback(async () => {
     const code = joinCode.trim();
     if (!code) {
-      Alert.alert(
-        'Convite',
-        'Cole o token (inv_…), o link completo com ?join=… ou o valor depois de join= na URL.',
-      );
+      Alert.alert('Convite', 'Cole aqui o código ou o link de convite que você recebeu.');
       return;
     }
     if (!profile.userId) return;
@@ -542,7 +539,7 @@ export function HomeScreen({
     if (!inviteUrl) return;
     const ok = await copyTextToClipboard(inviteUrl);
     if (ok) Alert.alert('Copiado', 'O link do convite foi copiado.');
-    else Alert.alert('Copiar', 'Não foi possível copiar (permissão ou navegador sem suporte).');
+    else Alert.alert('Copiar', 'Não consegui copiar agora. Tente novamente em instantes.');
   };
 
   const shareInvite = async (inviteUrl: string | null) => {
@@ -562,13 +559,13 @@ export function HomeScreen({
     if (!normalized) return;
     const ok = await copyTextToClipboard(normalized);
     if (ok) Alert.alert('Copiado', 'O código de convite foi copiado.');
-    else Alert.alert('Copiar', 'Não foi possível copiar (permissão ou navegador sem suporte).');
+    else Alert.alert('Copiar', 'Não consegui copiar agora. Tente novamente em instantes.');
   };
 
   const joinPlaceholder =
     Platform.OS === 'web'
-      ? 'Ex.: inv_abc12… ou cole o link (https://…?join=inv_…)'
-      : 'Ex.: inv_abc12… ou cole o link de convite inteiro';
+      ? 'Cole aqui o código ou o link de convite'
+      : 'Cole aqui o código ou o link de convite';
 
   return (
     <View style={[styles.root, { paddingBottom: insets.bottom + 16 }]}>
@@ -672,7 +669,7 @@ export function HomeScreen({
                     <Text style={styles.bandPathTitle}>Criar uma banda</Text>
                   </View>
                   <Text style={styles.bandPathBody}>
-                    Ainda não tem banda como administrador? Use o botão para registar o nome. No cadastro da conta também pode marcar “Criar banda”.
+                    Crie uma nova banda e comece a organizar seus integrantes em poucos segundos.
                   </Text>
                   <Pressable
                     onPress={() => setBandModalOpen(true)}
@@ -792,8 +789,7 @@ export function HomeScreen({
                     <Text style={styles.bandPathTitle}>Entrar com código</Text>
                   </View>
                   <Text style={styles.bandPathBody}>
-                    Aceita o token <Text style={styles.bandPathMono}>inv_…</Text>, o URL com{' '}
-                    <Text style={styles.bandPathMono}>?join=…</Text> ou texto que contenha esses valores — detetamos automaticamente.
+                    Você pode entrar com o código ou com o link de convite recebido. O sistema reconhece automaticamente.
                   </Text>
                   <Text style={styles.joinFieldLabel}>Código ou link de convite</Text>
                   <TextInput
@@ -828,7 +824,7 @@ export function HomeScreen({
           ) : (
             <View style={styles.adminPageWrap}>
               <Text style={styles.adminPageTitle}>Administração de bandas</Text>
-              <Text style={styles.adminPageLead}>Escolha uma banda para editar, gerar novo código ou excluir.</Text>
+              <Text style={styles.adminPageLead}>Escolha uma banda para editar, organizar integrantes e manter tudo em dia.</Text>
               <View style={styles.bandsPanel}>
                 <Text style={styles.bandsPanelTitle}>Menu · Minhas bandas</Text>
                 <Text style={styles.bandsPanelLead}>
@@ -954,7 +950,7 @@ export function HomeScreen({
                                             accessibilityRole="button"
                                             accessibilityLabel={`Promover ${member.displayName || member.email || 'integrante'}`}
                                           >
-                                            <Text style={styles.ownerCrudBtnText}>Promover admin</Text>
+                                            <Text style={styles.ownerCrudBtnText}>Tornar administrador</Text>
                                           </Pressable>
                                         ) : (
                                           <Pressable
@@ -974,7 +970,7 @@ export function HomeScreen({
                                             accessibilityRole="button"
                                             accessibilityLabel={`Retirar privilégios de ${member.displayName || member.email || 'integrante'}`}
                                           >
-                                            <Text style={styles.ownerCrudBtnText}>Retirar admin</Text>
+                                            <Text style={styles.ownerCrudBtnText}>Remover administração</Text>
                                           </Pressable>
                                         )}
                                         <Pressable
@@ -1001,9 +997,7 @@ export function HomeScreen({
                                   </View>
                                 ))
                               ) : (
-                                <Text style={styles.membersHint}>
-                                  Nenhum integrante visível ainda. Se já existem membros, aplique a migration da RPC de listagem de integrantes.
-                                </Text>
+                                <Text style={styles.membersHint}>Ainda não há integrantes visíveis nesta banda.</Text>
                               )}
                             </View>
                           ) : null}
@@ -1084,9 +1078,7 @@ export function HomeScreen({
 
         <Text style={styles.section}>Resumo (demonstração)</Text>
         <View style={styles.card}>
-          <Text style={styles.mockDisclaimer}>
-            Exemplos fixos — com a API ligada, isso vem dos seus dados reais.
-          </Text>
+          <Text style={styles.mockDisclaimer}>Esta área é apenas uma prévia ilustrativa.</Text>
           {MOCK_ACTIVITY_ROWS.map((row, i) => (
             <View key={i} style={[styles.mockRow, i > 0 && styles.mockRowBorder]}>
               <View style={styles.mockRowMain}>
@@ -1116,7 +1108,7 @@ export function HomeScreen({
 
         {Platform.OS === 'web' ? (
           <Text style={styles.webFootnote}>
-            Você está na versão web: login, bandas e convites ficam armazenados neste navegador (localmente). Limpar dados do site ou usar outro navegador pede cadastro de novo até existir conta na nuvem.
+            Você está na versão web. Se trocar de navegador ou limpar os dados do site, pode ser necessário entrar novamente.
           </Text>
         ) : null}
       </ScrollView>
@@ -1151,7 +1143,7 @@ export function HomeScreen({
               editable={!bandModalBusy}
               autoCorrect={false}
             />
-            <Text style={styles.modalFieldLabel}>Foto da banda (URL, opcional)</Text>
+            <Text style={styles.modalFieldLabel}>Link da foto da banda (opcional)</Text>
             <TextInput
               style={styles.modalInput}
               placeholder="https://..."
@@ -1227,7 +1219,7 @@ export function HomeScreen({
                 editable={!bandCrudBusy}
                 autoCorrect={false}
               />
-              <Text style={styles.modalFieldLabel}>Foto da banda (URL)</Text>
+              <Text style={styles.modalFieldLabel}>Link da foto da banda</Text>
               <TextInput
                 style={styles.modalInput}
                 placeholder="https://..."

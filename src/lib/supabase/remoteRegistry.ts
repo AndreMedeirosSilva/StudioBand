@@ -50,6 +50,14 @@ function mapAuthMessage(err: { message?: string } | null): string {
   if (m.includes('signup') && m.includes('disabled')) {
     return 'Novos registos estão desativados no painel do Supabase (Authentication).';
   }
+  if (
+    (m.includes('email') && m.includes('rate limit')) ||
+    m.includes('email rate limit exceeded') ||
+    m.includes('over_email_send_rate_limit') ||
+    m.includes('rate_limit')
+  ) {
+    return 'Muitas tentativas em pouco tempo. Aguarde alguns minutos antes de tentar novamente, ou entre com Google/Apple.';
+  }
   if (m.includes('invalid') && m.includes('jwt')) {
     return 'Chave API inválida. No Supabase use a chave anon (JWT) em EXPO_PUBLIC_SUPABASE_ANON_KEY ou confirme a publishable.';
   }
@@ -369,7 +377,7 @@ export async function registerAccountRemote(input: RegisterInput): Promise<Remot
     return {
       ok: false,
       message:
-        'Conta criada no Supabase, mas ainda sem sessão: abra o link de confirmação no e-mail (e spam). Para testar sem e-mail: Dashboard → Authentication → Providers → Email → desligar “Confirm email”. Depois use Entrar ou cadastre de novo.',
+        'Sua conta foi criada. Confirme seu e-mail (inclusive spam/lixo eletrônico) e depois entre normalmente.',
     };
   }
 

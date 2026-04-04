@@ -15,8 +15,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../theme';
 import type { UserProfile } from '../navigation/AppNavigator';
-import { registerAccount } from '../registry/localRegistry';
-import { isSupabaseConfigured } from '../lib/supabase/config';
+import { loginWithPassword, registerAccount } from '../registry/localRegistry';
+import { isAppleAuthEnabled, isGoogleAuthEnabled, isSupabaseConfigured } from '../lib/supabase/config';
+import { signInWithGoogle } from '../lib/supabase/googleAuth';
+import { signInWithApple } from '../lib/supabase/appleAuth';
+import { Image } from 'expo-image';
+import { GOOGLE_G_LOGO_URI } from '../assets/googleBrand';
 import { getPasswordPolicyError, isValidEmail, MIN_PASSWORD_LENGTH } from '../lib/auth/credentialsPolicy';
 
 type Props = {
@@ -31,19 +35,14 @@ export function RegisterScreen({ onBack, onComplete }: Props) {
   const cardW = Math.min(440, width - horizontalPad * 2);
 
   const [email, setEmail] = useState('');
-  const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
-  const [isBand, setIsBand] = useState(false);
-  const [isStudio, setIsStudio] = useState(false);
-  const [bandName, setBandName] = useState('');
-  const [studioName, setStudioName] = useState('');
   const [busy, setBusy] = useState(false);
-
-  const toggle = (key: 'band' | 'studio') => {
-    if (key === 'band') setIsBand((v) => !v);
-    else setIsStudio((v) => !v);
-  };
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [appleBusy, setAppleBusy] = useState(false);
+  const showGoogle = isGoogleAuthEnabled();
+  const showApple = isAppleAuthEnabled();
+  const showSocial = showGoogle || showApple;
 
   const submit = async () => {
     const e = email.trim();
@@ -60,42 +59,78 @@ export function RegisterScreen({ onBack, onComplete }: Props) {
       Alert.alert('Senha', 'As senhas não coincidem.');
       return;
     }
-    if (isBand && !bandName.trim()) {
-      Alert.alert('Banda', 'Informe o nome da banda ou desmarque “Criar banda”.');
-      return;
-    }
-    if (isStudio && !studioName.trim()) {
-      Alert.alert('Estúdio', 'Informe o nome do estúdio ou desmarque “Dono de estúdio”.');
-      return;
-    }
-
     setBusy(true);
     try {
       const res = await registerAccount({
         email: e,
         password,
-        displayName: displayName.trim() || null,
-        isBand,
-        bandName,
-        isStudio,
-        studioName,
+        displayName: null,
+        isBand: false,
+        bandName: '',
+        isStudio: false,
+        studioName: '',
       });
       if (!res.ok) {
+        const msg = res.message.toLowerCase();
+        const canTryLogin =
+          msg.includes('já está cadastrado') ||
+          msg.includes('muitas tentativas') ||
+          msg.includes('aguarde alguns minutos') ||
+          msg.includes('confirme o e-mail');
+        if (canTryLogin) {
+          const loginRes = await loginWithPassword(e, password);
+          if (loginRes.ok) {
+            Alert.alert('Conta encontrada', 'Sua conta já estava criada. Você foi conectado com sucesso.');
+            onComplete(loginRes.profile);
+            return;
+          }
+        }
         Alert.alert('Cadastro', res.message);
         return;
       }
-      onComplete(res.profile);
+      Alert.alert('Cadastro concluído', 'Conta criada com sucesso. Agora faça seu login.');
+      onBack();
     } finally {
       setBusy(false);
+    }
+  };
+
+  const onGoogle = async () => {
+    setGoogleBusy(true);
+    try {
+      const r = await signInWithGoogle();
+      if (r.kind === 'error') {
+        Alert.alert('Google', r.message);
+        return;
+      }
+      if (r.kind === 'ok') {
+        onComplete(r.profile);
+      }
+    } finally {
+      if (Platform.OS !== 'web') setGoogleBusy(false);
+    }
+  };
+
+  const onApple = async () => {
+    setAppleBusy(true);
+    try {
+      const r = await signInWithApple();
+      if (r.kind === 'error') {
+        Alert.alert('Apple', r.message);
+        return;
+      }
+      if (r.kind === 'ok') {
+        onComplete(r.profile);
+      }
+    } finally {
+      if (Platform.OS !== 'web') setAppleBusy(false);
     }
   };
 
   const canSubmit =
     email.trim().length > 0 &&
     password.length >= MIN_PASSWORD_LENGTH &&
-    password === passwordConfirm &&
-    (!isBand || bandName.trim().length > 0) &&
-    (!isStudio || studioName.trim().length > 0);
+    password === passwordConfirm;
 
   return (
     <KeyboardAvoidingView style={[styles.root, { paddingTop: insets.top }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -116,70 +151,52 @@ export function RegisterScreen({ onBack, onComplete }: Props) {
         </Pressable>
 
         <Text style={styles.title}>Criar conta</Text>
-        <Text style={styles.sub}>
-          {Platform.OS === 'web'
-            ? 'Use o mesmo e-mail e senha para entrar depois. O código de convite da banda só pode ser usado no painel, já logado.'
-            : 'Depois de entrar, use o painel para colar o código e entrar numa banda.'}
-        </Text>
+        <Text style={styles.sub}>Escolha como quer entrar e comece a usar o app.</Text>
 
         <View style={[styles.card, { width: cardW, maxWidth: '100%', alignSelf: 'center' }]}>
-          <Text style={styles.sectionLabel}>Eu também sou…</Text>
-          <Text style={styles.fieldHint}>Opcional. Pode criar só a conta e juntar-se a uma banda depois no app.</Text>
-          <View style={styles.toggles}>
-            <Pressable
-              onPress={() => toggle('band')}
-              style={[styles.chip, isBand && styles.chipOn]}
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: isBand }}
-            >
-              <Text style={[styles.chipText, isBand && styles.chipTextOn]}>Criar banda</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => toggle('studio')}
-              style={[styles.chip, isStudio && styles.chipOn]}
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: isStudio }}
-            >
-              <Text style={[styles.chipText, isStudio && styles.chipTextOn]}>Dono de estúdio</Text>
-            </Pressable>
-          </View>
-
-          {isBand ? (
-            <>
-              <Text style={[styles.label, styles.labelSpaced]}>Nome da banda (nova)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Ex.: Os Polaroides"
-                placeholderTextColor={COLORS.muted}
-                value={bandName}
-                onChangeText={setBandName}
-              />
-            </>
+          {showSocial ? (
+            <View style={styles.socialWrap}>
+              {showGoogle ? (
+                <Pressable
+                  style={({ pressed }) => [styles.socialGoogleBtn, (googleBusy || pressed) && styles.pressed]}
+                  onPress={() => void onGoogle()}
+                  disabled={googleBusy || appleBusy || busy}
+                  accessibilityRole="button"
+                  accessibilityLabel="Continuar com Google"
+                >
+                  {googleBusy ? (
+                    <ActivityIndicator color={COLORS.text} />
+                  ) : (
+                    <View style={styles.googleBtnInner}>
+                      <Image source={{ uri: GOOGLE_G_LOGO_URI }} style={styles.googleMark} contentFit="contain" />
+                      <Text style={styles.socialGoogleText}>Continuar com Google</Text>
+                    </View>
+                  )}
+                </Pressable>
+              ) : null}
+              {showApple ? (
+                <Pressable
+                  style={({ pressed }) => [styles.socialAppleBtn, (appleBusy || pressed) && styles.pressed]}
+                  onPress={() => void onApple()}
+                  disabled={googleBusy || appleBusy || busy}
+                  accessibilityRole="button"
+                  accessibilityLabel="Continuar com Apple"
+                >
+                  {appleBusy ? <ActivityIndicator color="#fff" /> : <Text style={styles.socialAppleText}>Continuar com Apple</Text>}
+                </Pressable>
+              ) : null}
+              <View style={styles.dividerRow}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>ou com e-mail</Text>
+                <View style={styles.dividerLine} />
+              </View>
+            </View>
           ) : null}
 
-          {isStudio ? (
-            <>
-              <Text style={[styles.label, styles.labelSpaced]}>Nome do estúdio</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Ex.: Estúdio Groove"
-                placeholderTextColor={COLORS.muted}
-                value={studioName}
-                onChangeText={setStudioName}
-              />
-            </>
-          ) : null}
+          <Text style={styles.sectionLabel}>Cadastro por e-mail</Text>
+          <Text style={styles.fieldHint}>Preencha apenas e-mail e senha.</Text>
 
-          <Text style={[styles.label, styles.labelSpaced]}>Nome (como aparece para a banda)</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Ex.: Maria · guitarra"
-            placeholderTextColor={COLORS.muted}
-            value={displayName}
-            onChangeText={setDisplayName}
-          />
-
-          <Text style={[styles.label, styles.labelSpaced]}>E-mail (login)</Text>
+          <Text style={[styles.label, styles.labelSpaced]}>E-mail</Text>
           <TextInput
             style={styles.input}
             placeholder="voce@email.com"
@@ -214,14 +231,14 @@ export function RegisterScreen({ onBack, onComplete }: Props) {
 
           <Text style={styles.hint}>
             {isSupabaseConfigured()
-              ? 'Conta e dados ligados ao Supabase (nuvem).'
-              : 'Cadastro local desativado por segurança. Configure Supabase no .env.'}
+              ? 'Sua conta ficará salva com segurança para acessar quando quiser.'
+              : 'No momento, o cadastro completo ainda não está disponível neste ambiente.'}
           </Text>
 
           <Pressable
             style={({ pressed }) => [styles.primary, !canSubmit && styles.primaryOff, pressed && canSubmit && styles.pressed]}
             onPress={() => void submit()}
-            disabled={!canSubmit || busy}
+            disabled={!canSubmit || busy || googleBusy || appleBusy}
             accessibilityRole="button"
             accessibilityState={{ disabled: !canSubmit || busy }}
           >
@@ -264,18 +281,59 @@ const styles = StyleSheet.create({
   },
   sectionLabel: { fontSize: 12, fontWeight: '700', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: 0.8 },
   fieldHint: { marginTop: 6, fontSize: 12, color: COLORS.muted, lineHeight: 17 },
-  toggles: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 },
-  chip: {
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+  socialWrap: { marginTop: 8, marginBottom: 8 },
+  socialGoogleBtn: {
+    marginBottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.bg,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.border,
-    backgroundColor: COLORS.bg,
+    paddingVertical: 13,
+    paddingHorizontal: 14,
   },
-  chipOn: { borderColor: COLORS.accent, backgroundColor: 'rgba(255, 190, 152, 0.12)' },
-  chipText: { color: COLORS.muted, fontSize: 15, fontWeight: '600' },
-  chipTextOn: { color: COLORS.accent },
+  googleBtnInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  googleMark: {
+    width: 20,
+    height: 20,
+  },
+  socialGoogleText: { color: COLORS.text, fontSize: 15, fontWeight: '700' },
+  socialAppleBtn: {
+    marginBottom: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#111111',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    paddingVertical: 13,
+    paddingHorizontal: 14,
+  },
+  socialAppleText: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 8,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: COLORS.border,
+  },
+  dividerText: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
   label: {
     fontSize: 12,
     fontWeight: '700',
