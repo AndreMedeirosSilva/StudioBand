@@ -836,6 +836,12 @@ export function HomeScreen({
                       key={`${row.id}-${row.role}-${i}`}
                       style={[styles.bandChip, i > 0 && styles.bandChipSpaced]}
                     >
+                      {row.photoUrl ? (
+                        <View style={styles.bandChipBackdrop} pointerEvents="none">
+                          <Image source={{ uri: row.photoUrl }} style={styles.bandChipBackdropImage} />
+                          <View style={styles.bandChipBackdropFade} />
+                        </View>
+                      ) : null}
                       <View style={styles.bandChipTopRow}>
                         <View style={styles.bandAvatarListWrap}>
                           {row.photoUrl ? (
@@ -1715,6 +1721,19 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     paddingVertical: 12,
     paddingHorizontal: 14,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  bandChipBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  bandChipBackdropImage: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.34,
+  },
+  bandChipBackdropFade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(9, 12, 22, 0.55)',
   },
   bandChipTopRow: {
     flexDirection: 'row',
