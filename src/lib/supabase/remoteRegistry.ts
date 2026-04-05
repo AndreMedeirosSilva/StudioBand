@@ -29,6 +29,94 @@ export type RemoteLoginResult =
   | { ok: false; message: string };
 
 export type RemoteActionResult = { ok: true } | { ok: false; message: string };
+export type RemoteStudioMemberSummary = {
+  userId: string;
+  displayName: string | null;
+  email: string | null;
+  role: 'admin' | 'member';
+  joinedAt: string | null;
+};
+
+export type RemoteStudioUpsertInput = {
+  studioName: string;
+  addressLine: string;
+  photoUrl: string | null;
+};
+
+export type RemoteStudioSummary = {
+  id: string;
+  name: string;
+  addressLine: string | null;
+  photoUrl: string | null;
+  inviteToken: string | null;
+};
+
+export type RemoteOwnedStudioSummary = {
+  id: string;
+  name: string;
+  inviteToken: string | null;
+  photoUrl: string | null;
+};
+
+function isMissingRpcError(rawMessage: string, fnName: string): boolean {
+  const m = rawMessage.toLowerCase();
+  return (
+    m.includes(fnName.toLowerCase()) &&
+    (m.includes('does not exist') || m.includes('schema cache') || m.includes('function'))
+  );
+}
+
+async function getManagedStudioSummaryForUser(
+  sb: ReturnType<typeof getSupabase>,
+  userId: string,
+): Promise<RemoteStudioSummary | null> {
+  const { data: rpcData, error: rpcErr } = await sb.rpc('get_managed_studio_summary');
+  if (!rpcErr && rpcData) {
+    const rawRow = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    if (!rawRow) return null;
+    const row = rawRow as {
+      studio_id: string;
+      studio_name: string;
+      address_line: string | null;
+      photo_url: string | null;
+      invite_token: string | null;
+    };
+    return {
+      id: row.studio_id,
+      name: row.studio_name,
+      addressLine: row.address_line ?? null,
+      photoUrl: row.photo_url?.trim() || null,
+      inviteToken: row.invite_token?.trim() || null,
+    };
+  }
+  const raw = rpcErr?.message ?? '';
+  if (!raw || !isMissingRpcError(raw, 'get_managed_studio_summary')) {
+    return null;
+  }
+  // Fallback para schema antigo: apenas o estúdio do owner.
+  const { data: legacy } = await sb
+    .from('studios')
+    .select('id, name, address_line, photo_url, invite_token')
+    .eq('owner_user_id', userId)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (!legacy) return null;
+  const l = legacy as {
+    id: string;
+    name: string;
+    address_line?: string | null;
+    photo_url?: string | null;
+    invite_token?: string | null;
+  };
+  return {
+    id: l.id,
+    name: l.name,
+    addressLine: l.address_line ?? null,
+    photoUrl: l.photo_url?.trim() || null,
+    inviteToken: l.invite_token?.trim() || null,
+  };
+}
 
 function mapAuthMessage(err: { message?: string } | null): string {
   const m = (err?.message ?? '').toLowerCase();
@@ -305,13 +393,7 @@ export async function buildPersistedProfileForUser(user: User): Promise<Persiste
         : `${dedupBands[0].name} +${dedupBands.length - 1}`
       : null;
 
-  const { data: studio } = await sb
-    .from('studios')
-    .select('id, name')
-    .eq('owner_user_id', userId)
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
+  const studio = await getManagedStudioSummaryForUser(sb, userId);
 
   return {
     userId,
@@ -325,6 +407,264 @@ export async function buildPersistedProfileForUser(user: User): Promise<Persiste
     studioName: studio?.name ?? null,
     ownerStudioId: studio?.id ?? null,
   };
+}
+
+export async function upsertManagedStudioRemote(input: RemoteStudioUpsertInput): Promise<RemoteLoginResult> {
+  const sb = getSupabase();
+  const user = await resolveAuthUser(sb);
+  if (!user) return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+
+  const studioName = input.studioName.trim();
+  const addressLine = input.addressLine.trim();
+  const photoUrl = input.photoUrl?.trim() ?? null;
+  if (!studioName) return { ok: false, message: 'Informe o nome do estúdio.' };
+  if (!addressLine) return { ok: false, message: 'Informe o endereço do estúdio.' };
+  if (photoUrl && !/^https?:\/\//i.test(photoUrl)) {
+    return { ok: false, message: 'A foto do estúdio precisa ser um link válido (http/https).' };
+  }
+
+  const { error } = await sb.rpc('admin_upsert_my_studio', {
+    p_name: studioName,
+    p_address_line: addressLine,
+    p_photo_url: photoUrl,
+  });
+  if (error) {
+    return { ok: false, message: mapDbError(error.message) };
+  }
+  const profile = await buildPersistedProfileForUser(user);
+  if (!profile) return { ok: false, message: 'Estúdio salvo, mas falhou ao atualizar seu perfil.' };
+  return { ok: true, profile };
+}
+
+function draftStudioInviteToken(): string {
+  return `inv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
+export async function createManagedStudioRemote(input: RemoteStudioUpsertInput): Promise<RemoteLoginResult> {
+  const sb = getSupabase();
+  const user = await resolveAuthUser(sb);
+  if (!user) return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+
+  const studioName = input.studioName.trim();
+  const addressLine = input.addressLine.trim();
+  const photoUrl = input.photoUrl?.trim() ?? null;
+  if (!studioName) return { ok: false, message: 'Informe o nome do estúdio.' };
+  if (!addressLine) return { ok: false, message: 'Informe o endereço do estúdio.' };
+  if (photoUrl && !/^https?:\/\//i.test(photoUrl)) {
+    return { ok: false, message: 'A foto do estúdio precisa ser um link válido (http/https).' };
+  }
+
+  let studioId: string | null = null;
+  let inviteToken = '';
+  for (let i = 0; i < 6; i += 1) {
+    inviteToken = draftStudioInviteToken();
+    const { data, error } = await sb
+      .from('studios')
+      .insert({
+        owner_user_id: user.id,
+        name: studioName,
+        address_line: addressLine,
+        photo_url: photoUrl,
+        invite_token: inviteToken,
+      })
+      .select('id')
+      .single();
+    if (!error && data?.id) {
+      studioId = data.id as string;
+      break;
+    }
+    const raw = (error?.message ?? '').toLowerCase();
+    if (!raw.includes('unique') && !raw.includes('duplicate')) {
+      return { ok: false, message: mapDbError(error?.message ?? 'Falha ao cadastrar estúdio.') };
+    }
+  }
+
+  if (!studioId) {
+    return { ok: false, message: 'Não consegui gerar um código de convite único para o estúdio. Tente novamente.' };
+  }
+
+  // Garante membership admin para o owner no modelo atual.
+  const { error: joinErr } = await sb.rpc('join_studio_by_invite', { p_token: inviteToken });
+  if (joinErr) {
+    const m = (joinErr.message ?? '').toLowerCase();
+    if (!m.includes('already_member')) {
+      return { ok: false, message: mapDbError(joinErr.message) };
+    }
+  }
+
+  const profile = await buildPersistedProfileForUser(user);
+  if (!profile) return { ok: false, message: 'Estúdio salvo, mas falhou ao atualizar seu perfil.' };
+  return { ok: true, profile };
+}
+
+export async function listOwnedStudiosForUserRemote(userId: string): Promise<RemoteOwnedStudioSummary[]> {
+  const sb = getSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user || user.id !== userId) return [];
+  const { data, error } = await sb
+    .from('studios')
+    .select('id, name, invite_token, photo_url')
+    .eq('owner_user_id', userId)
+    .order('created_at', { ascending: true });
+  if (error) return [];
+  type Row = { id: string; name: string; invite_token: string | null; photo_url: string | null };
+  return (data as Row[] | null | undefined ?? []).map((row) => ({
+    id: row.id,
+    name: row.name,
+    inviteToken: row.invite_token?.trim() || null,
+    photoUrl: row.photo_url?.trim() || null,
+  }));
+}
+
+export async function joinStudioWithInviteRemote(userId: string, inviteToken: string): Promise<RemoteLoginResult> {
+  const t = parseInviteToken(inviteToken);
+  if (!t) return { ok: false, message: 'Cole um código de convite válido do estúdio.' };
+  const sb = getSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user || user.id !== userId) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const { error } = await sb.rpc('join_studio_by_invite', { p_token: t });
+  if (error) {
+    const m = (error.message ?? '').toLowerCase();
+    if (m.includes('invalid_invite')) return { ok: false, message: 'Código de estúdio inválido.' };
+    if (m.includes('already_member')) return { ok: false, message: 'Você já administra este estúdio.' };
+    return { ok: false, message: mapDbError(error.message) };
+  }
+  const profile = await buildPersistedProfileForUser(user);
+  if (!profile) return { ok: false, message: 'Convite aceito, mas não consegui atualizar seu perfil.' };
+  return { ok: true, profile };
+}
+
+export async function peekInviteStudioNameRemote(token: string): Promise<string | null> {
+  const t = parseInviteToken(token);
+  if (!t) return null;
+  const sb = getSupabase();
+  const { data, error } = await sb.rpc('peek_invite_studio_name', { p_token: t });
+  if (error || data == null) return null;
+  return typeof data === 'string' ? data : null;
+}
+
+export async function getManagedStudioInviteTokenRemote(userId: string): Promise<string | null> {
+  const sb = getSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user || user.id !== userId) return null;
+  const studio = await getManagedStudioSummaryForUser(sb, userId);
+  if (!studio) return null;
+  if (studio.inviteToken?.trim()) return studio.inviteToken.trim();
+  const regen = await regenerateManagedStudioInviteRemote(userId);
+  return regen.ok ? regen.inviteToken : null;
+}
+
+export async function regenerateManagedStudioInviteRemote(userId: string): Promise<{ ok: true; inviteToken: string } | { ok: false; message: string }> {
+  const sb = getSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user || user.id !== userId) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const studio = await getManagedStudioSummaryForUser(sb, userId);
+  if (!studio) return { ok: false, message: 'Você ainda não administra nenhum estúdio.' };
+  const { data, error } = await sb.rpc('admin_regenerate_studio_invite', { p_studio_id: studio.id });
+  if (error) return { ok: false, message: mapDbError(error.message) };
+  const token = typeof data === 'string' ? data.trim() : '';
+  if (!token) return { ok: false, message: 'Não foi possível gerar novo convite agora.' };
+  return { ok: true, inviteToken: token };
+}
+
+export async function deleteManagedStudioRemote(userId: string): Promise<RemoteLoginResult> {
+  const sb = getSupabase();
+  const user = await resolveAuthUser(sb);
+  if (!user || user.id !== userId) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const studio = await getManagedStudioSummaryForUser(sb, userId);
+  if (!studio) {
+    return { ok: false, message: 'Você ainda não administra nenhum estúdio.' };
+  }
+
+  const { error: rpcErr } = await sb.rpc('admin_delete_studio', { p_studio_id: studio.id });
+  if (rpcErr) {
+    const raw = (rpcErr.message ?? '').toLowerCase();
+    const rpcMissing = isMissingRpcError(raw, 'admin_delete_studio');
+    if (!rpcMissing) {
+      if (raw.includes('not_admin')) return { ok: false, message: 'Somente administradores podem excluir este estúdio.' };
+      if (raw.includes('studio_not_found')) return { ok: false, message: 'Estúdio não encontrado.' };
+      return { ok: false, message: mapDbError(rpcErr.message) };
+    }
+    // Fallback legado: só owner consegue excluir diretamente.
+    const { error: fallbackErr } = await sb
+      .from('studios')
+      .delete()
+      .eq('id', studio.id)
+      .eq('owner_user_id', userId);
+    if (fallbackErr) return { ok: false, message: mapDbError(fallbackErr.message) };
+  }
+
+  const profile = await buildPersistedProfileForUser(user);
+  if (!profile) return { ok: false, message: 'Estúdio excluído, mas falhou ao atualizar seu perfil.' };
+  return { ok: true, profile };
+}
+
+export async function listStudioMembersForAdminRemote(
+  userId: string,
+  studioId: string,
+): Promise<RemoteStudioMemberSummary[]> {
+  const sb = getSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user || user.id !== userId) return [];
+  const { data, error } = await sb.rpc('list_studio_members_for_admin', { p_studio_id: studioId });
+  if (error) return [];
+  type RpcRow = {
+    user_id: string;
+    role: 'admin' | 'member';
+    joined_at: string | null;
+    display_name: string | null;
+    email: string | null;
+  };
+  return (data as RpcRow[] | null | undefined ?? []).map((row) => ({
+    userId: row.user_id,
+    displayName: row.display_name ?? null,
+    email: row.email ?? null,
+    role: row.role === 'admin' ? 'admin' : 'member',
+    joinedAt: row.joined_at ?? null,
+  }));
+}
+
+export async function removeStudioMemberForAdminRemote(
+  userId: string,
+  studioId: string,
+  memberUserId: string,
+): Promise<RemoteActionResult> {
+  const sb = getSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user || user.id !== userId) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const { error } = await sb.rpc('remove_studio_member_for_admin', {
+    p_studio_id: studioId,
+    p_user_id: memberUserId,
+  });
+  if (!error) return { ok: true };
+  const m = (error.message ?? '').toLowerCase();
+  if (m.includes('not_admin')) return { ok: false, message: 'Somente administradores podem remover sócios.' };
+  if (m.includes('cannot_remove_owner')) return { ok: false, message: 'O criador do estúdio não pode ser removido.' };
+  if (m.includes('member_not_found')) return { ok: false, message: 'Sócio não encontrado neste estúdio.' };
+  if (isMissingRpcError(m, 'remove_studio_member_for_admin')) {
+    return { ok: false, message: 'Função SQL remove_studio_member_for_admin não encontrada. Aplique a migration mais recente.' };
+  }
+  return { ok: false, message: mapDbError(error.message) };
 }
 
 export async function loginWithPasswordRemote(email: string, password: string): Promise<RemoteLoginResult> {
@@ -393,11 +733,10 @@ export async function registerAccountRemote(input: RegisterInput): Promise<Remot
   }
 
   if (input.isStudio && input.studioName.trim()) {
-    const { error: studioErr } = await sb.from('studios').insert({
-      owner_user_id: userId,
-      name: input.studioName.trim(),
-      default_price_per_hour_cents: 9000,
-      timezone: 'Europe/Lisbon',
+    const { error: studioErr } = await sb.rpc('admin_upsert_my_studio', {
+      p_name: input.studioName.trim(),
+      p_address_line: '',
+      p_photo_url: null,
     });
     if (studioErr) {
       return { ok: false, message: `Estúdio: ${mapDbError(studioErr.message)}` };

@@ -11,7 +11,9 @@ import {
   makeDemoBlockedRanges,
   defaultOwnerRooms,
   DEMO_OWNER_LOGO_URI,
+  normalizeOwnerStudioState,
   type OwnerStudioState,
+  type StudioRoom,
 } from '../data/studioCatalog';
 import {
   loadPersistedSession,
@@ -27,9 +29,9 @@ import { COLORS } from '../theme';
 
 export type { UserProfile };
 
-export type Screen = 'auth' | 'register' | 'home' | 'booking' | 'studioAgenda';
+export type Screen = 'auth' | 'register' | 'home' | 'bands' | 'studios' | 'booking' | 'studioAgenda';
 
-const SCREENS: Screen[] = ['auth', 'register', 'home', 'booking', 'studioAgenda'];
+const SCREENS: Screen[] = ['auth', 'register', 'home', 'bands', 'studios', 'booking', 'studioAgenda'];
 
 const initialProfile: UserProfile = {
   userId: '',
@@ -52,13 +54,14 @@ function normalizeScreen(raw: string): Screen {
 function ownerStudioStateForProfile(profile: UserProfile): OwnerStudioState {
   if (!profile.ownerStudioId) return emptyOwnerStudioState();
   const rooms = defaultOwnerRooms(profile.ownerStudioId);
-  return {
+  return normalizeOwnerStudioState({
     pricePerHour: 90,
+    addressLine: '',
     logoUri: DEMO_OWNER_LOGO_URI,
     rooms,
     blockedRangesByRoomDate: makeDemoBlockedRanges(rooms),
     bookings: makeDemoBookings(profile.ownerStudioId, rooms),
-  };
+  });
 }
 
 function applyOwnerStudioForProfile(
@@ -114,7 +117,15 @@ export function AppNavigator() {
         const saved = await loadPersistedSession();
         if (!cancelled && remoteProfile) {
           setProfile(remoteProfile);
-          applyOwnerStudioForProfile(remoteProfile, setOwnerStudio);
+          if (
+            saved?.profile.userId === remoteProfile.userId &&
+            saved.profile.ownerStudioId === remoteProfile.ownerStudioId &&
+            remoteProfile.ownerStudioId
+          ) {
+            setOwnerStudio(normalizeOwnerStudioState(saved.ownerStudio));
+          } else {
+            applyOwnerStudioForProfile(remoteProfile, setOwnerStudio);
+          }
           const screenToUse =
             saved?.profile.userId === remoteProfile.userId ? normalizeScreen(saved.screen) : 'home';
           setScreen(screenToUse);
@@ -222,7 +233,7 @@ export function AppNavigator() {
   useEffect(() => {
     if (!hydrated) return;
     const loggedIn = Boolean(profile.userId);
-    const gated: Screen[] = ['home', 'booking', 'studioAgenda'];
+    const gated: Screen[] = ['home', 'bands', 'studios', 'booking', 'studioAgenda'];
     if (!loggedIn && gated.includes(screen)) {
       setScreen('auth');
     }
@@ -239,6 +250,8 @@ export function AppNavigator() {
       auth: 'Entrar',
       register: 'Cadastro',
       home: 'Painel',
+      bands: 'Bandas',
+      studios: 'Estúdios',
       booking: 'Marcar ensaio',
       studioAgenda: 'Agenda do estúdio',
     };
@@ -276,11 +289,44 @@ export function AppNavigator() {
   }, []);
 
   const handleProfileUpdate = useCallback((next: UserProfile) => {
-    const studio = ownerStudioStateForProfile(next);
     setProfile(next);
-    setOwnerStudio(studio);
-    void savePersistedSession({ profile: next, ownerStudio: studio, screen });
-  }, [screen]);
+    setOwnerStudio((prev) => {
+      const studio =
+        next.ownerStudioId !== profile.ownerStudioId
+          ? ownerStudioStateForProfile(next)
+          : normalizeOwnerStudioState(prev);
+      void savePersistedSession({ profile: next, ownerStudio: studio, screen });
+      return studio;
+    });
+  }, [profile.ownerStudioId, screen]);
+
+  const handleUpsertStudio = useCallback(
+    (input: { studioName: string; addressLine: string; photoUrl: string | null; rooms: StudioRoom[] }) => {
+      const trimmedName = input.studioName.trim();
+      const studioName = trimmedName || 'Meu estúdio';
+      const studioId =
+        profile.ownerStudioId ??
+        `studio_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      const nextProfile: UserProfile = {
+        ...profile,
+        studioName,
+        ownerStudioId: studioId,
+      };
+      const baseOwner = profile.ownerStudioId
+        ? ownerStudio
+        : ownerStudioStateForProfile({ ...profile, studioName, ownerStudioId: studioId });
+      const nextOwner = normalizeOwnerStudioState({
+        ...baseOwner,
+        addressLine: input.addressLine.trim(),
+        logoUri: input.photoUrl,
+        rooms: input.rooms.length > 0 ? input.rooms : baseOwner.rooms,
+      });
+      setProfile(nextProfile);
+      setOwnerStudio(nextOwner);
+      void savePersistedSession({ profile: nextProfile, ownerStudio: nextOwner, screen });
+    },
+    [ownerStudio, profile, screen],
+  );
 
   const handleLogout = useCallback(() => {
     setProfile(initialProfile);
@@ -307,12 +353,45 @@ export function AppNavigator() {
       return (
         <HomeScreen
           profile={profile}
+          ownerStudio={ownerStudio}
           onBook={go('booking')}
           onStudioAgenda={go('studioAgenda')}
           onLogout={handleLogout}
           joinCodePrefill={joinCodePrefill}
           onConsumeJoinPrefill={consumeJoinPrefill}
           onProfileUpdate={handleProfileUpdate}
+          onUpsertStudio={handleUpsertStudio}
+          mode="home"
+          onGoBands={go('bands')}
+          onGoStudios={go('studios')}
+        />
+      );
+    case 'bands':
+      return (
+        <HomeScreen
+          profile={profile}
+          ownerStudio={ownerStudio}
+          onBook={go('booking')}
+          onStudioAgenda={go('studioAgenda')}
+          onLogout={handleLogout}
+          onProfileUpdate={handleProfileUpdate}
+          onUpsertStudio={handleUpsertStudio}
+          mode="bandas"
+          onBackHome={go('home')}
+        />
+      );
+    case 'studios':
+      return (
+        <HomeScreen
+          profile={profile}
+          ownerStudio={ownerStudio}
+          onBook={go('booking')}
+          onStudioAgenda={go('studioAgenda')}
+          onLogout={handleLogout}
+          onProfileUpdate={handleProfileUpdate}
+          onUpsertStudio={handleUpsertStudio}
+          mode="estudios"
+          onBackHome={go('home')}
         />
       );
     case 'studioAgenda':
@@ -323,6 +402,8 @@ export function AppNavigator() {
           onLogout={handleLogout}
           ownerStudio={ownerStudio}
           setOwnerStudio={setOwnerStudio}
+          onProfileUpdate={handleProfileUpdate}
+          onUpsertStudio={handleUpsertStudio}
         />
       );
     case 'booking':

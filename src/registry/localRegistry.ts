@@ -4,6 +4,16 @@ import { buildInviteUrl, parseInviteToken } from '../lib/inviteLink';
 import { isInsecureLocalAuthAllowed, isSupabaseConfigured } from '../lib/supabase/config';
 import { getPasswordPolicyError, isValidEmail, normalizeEmail } from '../lib/auth/credentialsPolicy';
 import {
+  createManagedStudioRemote,
+  deleteManagedStudioRemote,
+  getManagedStudioInviteTokenRemote,
+  joinStudioWithInviteRemote,
+  listOwnedStudiosForUserRemote,
+  peekInviteStudioNameRemote,
+  regenerateManagedStudioInviteRemote,
+  upsertManagedStudioRemote,
+  listStudioMembersForAdminRemote,
+  removeStudioMemberForAdminRemote,
   createOwnedBandRemote,
   deleteOwnedBandRemote,
   getInviteUrlForOwnedBandRemote,
@@ -32,6 +42,13 @@ export type OwnedBandSummary = {
   photoUrl: string | null;
 };
 
+export type OwnedStudioSummary = {
+  id: string;
+  name: string;
+  inviteToken: string | null;
+  photoUrl: string | null;
+};
+
 export type BandMemberSummary = {
   userId: string;
   displayName: string | null;
@@ -41,6 +58,7 @@ export type BandMemberSummary = {
 };
 
 export type BandActionResult = { ok: true } | { ok: false; message: string };
+export type StudioMemberSummary = BandMemberSummary;
 
 
 const REGISTRY_KEY = '@estudiobanda/local_registry/v1';
@@ -681,4 +699,133 @@ export async function leaveBand(userId: string, bandId: string): Promise<JoinBan
   if (r.memberships.length === before) return { ok: false, message: 'Você não faz parte desta banda.' };
   await saveRegistry(r);
   return { ok: true, profile: buildProfileFromRegistry(r, user) };
+}
+
+export async function upsertManagedStudio(
+  userId: string,
+  input: { studioName: string; addressLine: string; photoUrl: string | null },
+): Promise<JoinBandResult> {
+  if (isSupabaseConfigured()) {
+    return upsertManagedStudioRemote(input);
+  }
+  const r = await loadRegistry();
+  const user = r.users.find((u) => u.id === userId);
+  if (!user) return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  user.studioName = input.studioName.trim() || null;
+  user.ownerStudioId = user.ownerStudioId ?? `studio_${randomSuffix()}`;
+  await saveRegistry(r);
+  return { ok: true, profile: buildProfileFromRegistry(r, user) };
+}
+
+export async function createManagedStudio(
+  userId: string,
+  input: { studioName: string; addressLine: string; photoUrl: string | null },
+): Promise<JoinBandResult> {
+  if (isSupabaseConfigured()) {
+    return createManagedStudioRemote(input);
+  }
+  const r = await loadRegistry();
+  const user = r.users.find((u) => u.id === userId);
+  if (!user) return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  user.studioName = input.studioName.trim() || user.studioName;
+  user.ownerStudioId = user.ownerStudioId ?? `studio_${randomSuffix()}`;
+  await saveRegistry(r);
+  return { ok: true, profile: buildProfileFromRegistry(r, user) };
+}
+
+export async function listOwnedStudiosForUser(userId: string): Promise<OwnedStudioSummary[]> {
+  if (isSupabaseConfigured()) {
+    return listOwnedStudiosForUserRemote(userId);
+  }
+  const r = await loadRegistry();
+  const user = r.users.find((u) => u.id === userId);
+  if (!user || !user.ownerStudioId || !user.studioName) return [];
+  return [
+    {
+      id: user.ownerStudioId,
+      name: user.studioName,
+      inviteToken: null,
+      photoUrl: null,
+    },
+  ];
+}
+
+export async function joinStudioWithInvite(userId: string, inviteToken: string): Promise<JoinBandResult> {
+  if (isSupabaseConfigured()) {
+    return joinStudioWithInviteRemote(userId, inviteToken);
+  }
+  return { ok: false, message: 'Convite de estúdio requer Supabase configurado neste ambiente.' };
+}
+
+export async function peekInviteStudioName(token: string): Promise<string | null> {
+  if (isSupabaseConfigured()) {
+    return peekInviteStudioNameRemote(token);
+  }
+  return null;
+}
+
+export async function getManagedStudioInviteToken(userId: string): Promise<string | null> {
+  if (isSupabaseConfigured()) {
+    return getManagedStudioInviteTokenRemote(userId);
+  }
+  return null;
+}
+
+export async function regenerateManagedStudioInvite(
+  userId: string,
+): Promise<{ ok: true; inviteToken: string } | { ok: false; message: string }> {
+  if (isSupabaseConfigured()) {
+    return regenerateManagedStudioInviteRemote(userId);
+  }
+  return { ok: false, message: 'Convite de estúdio requer Supabase configurado neste ambiente.' };
+}
+
+export async function deleteManagedStudio(userId: string): Promise<JoinBandResult> {
+  if (isSupabaseConfigured()) {
+    return deleteManagedStudioRemote(userId);
+  }
+  const r = await loadRegistry();
+  const user = r.users.find((u) => u.id === userId);
+  if (!user) return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  user.studioName = null;
+  user.ownerStudioId = null;
+  await saveRegistry(r);
+  return { ok: true, profile: buildProfileFromRegistry(r, user) };
+}
+
+export async function listStudioMembersForAdmin(userId: string, studioId: string): Promise<StudioMemberSummary[]> {
+  if (isSupabaseConfigured()) {
+    return listStudioMembersForAdminRemote(userId, studioId);
+  }
+  const r = await loadRegistry();
+  const user = r.users.find((u) => u.id === userId);
+  if (!user || user.ownerStudioId !== studioId) return [];
+  return [
+    {
+      userId: user.id,
+      displayName: user.displayName ?? null,
+      email: user.email ?? null,
+      role: 'admin',
+      joinedAt: user.createdAt ?? null,
+    },
+  ];
+}
+
+export async function removeStudioMemberForAdmin(
+  userId: string,
+  studioId: string,
+  memberUserId: string,
+): Promise<BandActionResult> {
+  if (isSupabaseConfigured()) {
+    return removeStudioMemberForAdminRemote(userId, studioId, memberUserId);
+  }
+  const r = await loadRegistry();
+  const user = r.users.find((u) => u.id === userId);
+  if (!user || user.ownerStudioId !== studioId) {
+    return { ok: false, message: 'Somente administradores podem remover sócios deste estúdio.' };
+  }
+  if (memberUserId === userId) {
+    return { ok: false, message: 'No modo local, não é possível remover o seu próprio acesso ao estúdio.' };
+  }
+  return { ok: false, message: 'A remoção de sócios do estúdio no modo local requer Supabase configurado.' };
 }

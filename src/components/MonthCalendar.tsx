@@ -19,6 +19,8 @@ type Props = {
   maxDateKey: string;
   /** Dias com pelo menos um horário ocupado/bloqueado (ponto no calendário). */
   markedDateKeys?: Set<string>;
+  /** Dias totalmente indisponíveis (ex.: bloqueio do dia inteiro). */
+  unavailableDateKeys?: Set<string>;
   /** Destaca o dia de hoje (contorno). */
   todayDateKey?: string;
   /** Mostra legenda dos pontos abaixo do mês. */
@@ -36,6 +38,7 @@ export function MonthCalendar({
   minDateKey,
   maxDateKey,
   markedDateKeys,
+  unavailableDateKeys,
   todayDateKey,
   showLegend = true,
   instructionText,
@@ -96,6 +99,7 @@ export function MonthCalendar({
             const outOfRange = compareDateKeys(key, minDateKey) < 0 || compareDateKeys(key, maxDateKey) > 0;
             const selected = key === selectedDateKey;
             const marked = markedDateKeys?.has(key);
+            const unavailable = unavailableDateKeys?.has(key);
             const isToday = todayDateKey !== undefined && key === todayDateKey && !selected;
             return (
               <Pressable
@@ -116,7 +120,11 @@ export function MonthCalendar({
                 <Text style={[styles.cellNum, outOfRange && styles.cellNumDisabled, selected && styles.cellNumSelected]}>
                   {cell.getDate()}
                 </Text>
-                {marked ? <View style={styles.dot} /> : <View style={styles.dotPlaceholder} />}
+                {marked ? (
+                  <View style={[styles.dot, unavailable ? styles.dotUnavailable : styles.dotBusy]} />
+                ) : (
+                  <View style={styles.dotPlaceholder} />
+                )}
               </Pressable>
             );
           })}
@@ -128,6 +136,12 @@ export function MonthCalendar({
             <View style={[styles.legendDot, styles.legendDotBusy]} />
             <Text style={styles.legendText}>Dia com horário indisponível</Text>
           </View>
+          {unavailableDateKeys ? (
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, styles.legendDotUnavailable]} />
+              <Text style={styles.legendText}>Dia indisponível (inteiro bloqueado)</Text>
+            </View>
+          ) : null}
           <View style={styles.legendItem}>
             <View style={[styles.legendRing, { borderColor: COLORS.accent }]} />
             <Text style={styles.legendText}>Dia selecionado</Text>
@@ -221,9 +235,10 @@ const styles = StyleSheet.create({
     width: 5,
     height: 5,
     borderRadius: 2.5,
-    backgroundColor: COLORS.success,
     marginTop: 2,
   },
+  dotBusy: { backgroundColor: COLORS.success },
+  dotUnavailable: { backgroundColor: COLORS.danger },
   dotPlaceholder: { height: 7, marginTop: 2 },
   legend: {
     flexDirection: 'row',
@@ -238,6 +253,7 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendDot: { width: 8, height: 8, borderRadius: 4 },
   legendDotBusy: { backgroundColor: COLORS.success },
+  legendDotUnavailable: { backgroundColor: COLORS.danger },
   legendRing: {
     width: 12,
     height: 12,
