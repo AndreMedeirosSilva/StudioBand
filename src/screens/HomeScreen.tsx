@@ -24,6 +24,7 @@ import type { UserProfile } from '../navigation/AppNavigator';
 import type { OwnerStudioState } from '../data/studioCatalog';
 import {
   createOwnedBand,
+  deleteManagedStudio,
   deleteOwnedBand,
   getManagedStudioInviteToken,
   joinStudioWithInvite,
@@ -113,8 +114,6 @@ export function HomeScreen({
   const [studioAddressDraft, setStudioAddressDraft] = useState('');
   const [studioPhotoDraft, setStudioPhotoDraft] = useState('');
   const [studioInviteToken, setStudioInviteToken] = useState<string | null>(null);
-  const [studioJoinCode, setStudioJoinCode] = useState('');
-  const [studioJoinPreview, setStudioJoinPreview] = useState<string | null>(null);
   const [studioInviteBusy, setStudioInviteBusy] = useState(false);
 
   useEffect(() => {
@@ -201,18 +200,6 @@ export function HomeScreen({
     }
     void refreshStudioInviteToken(profile.userId, true);
   }, [profile.userId, profile.studioName, refreshStudioInviteToken]);
-
-  useEffect(() => {
-    const t = studioJoinCode.trim();
-    if (!t) {
-      setStudioJoinPreview(null);
-      return;
-    }
-    const id = setTimeout(() => {
-      void peekInviteStudioName(t).then(setStudioJoinPreview);
-    }, 350);
-    return () => clearTimeout(id);
-  }, [studioJoinCode]);
 
   const refreshBandData = useCallback(async () => {
     if (!profile.userId) return;
@@ -323,32 +310,6 @@ export function HomeScreen({
     }
   }, [studioInviteToken]);
 
-  const applyJoinStudio = useCallback(() => {
-    const code = studioJoinCode.trim();
-    if (!code) {
-      Alert.alert('Estúdio', 'Cole o código de convite do estúdio.');
-      return;
-    }
-    if (!profile.userId) return;
-    setStudioInviteBusy(true);
-    void (async () => {
-      try {
-        const res = await joinStudioWithInvite(profile.userId, code);
-        if (!res.ok) {
-          Alert.alert('Estúdio', res.message);
-          return;
-        }
-        onProfileUpdate(res.profile);
-        await refreshStudioInviteToken(profile.userId, true);
-        setStudioJoinCode('');
-        setStudioJoinPreview(null);
-        Alert.alert('Pronto', 'Você agora é administrador do estúdio.');
-      } finally {
-        setStudioInviteBusy(false);
-      }
-    })();
-  }, [onProfileUpdate, profile.userId, studioJoinCode, refreshStudioInviteToken]);
-
   const applyRegenerateStudioInvite = useCallback(() => {
     if (!profile.userId) return;
     setStudioInviteBusy(true);
@@ -366,6 +327,36 @@ export function HomeScreen({
       }
     })();
   }, [profile.userId]);
+
+  const applyDeleteStudio = useCallback(() => {
+    if (!profile.userId) return;
+    const title = profile.studioName?.trim() || 'este estúdio';
+    const runDelete = async () => {
+      setStudioInviteBusy(true);
+      try {
+        const res = await deleteManagedStudio(profile.userId);
+        if (!res.ok) {
+          Alert.alert('Estúdio', res.message);
+          return;
+        }
+        onProfileUpdate(res.profile);
+        setStudioInviteToken(null);
+        Alert.alert('Estúdio removido', `${title} foi excluído com sucesso.`);
+      } finally {
+        setStudioInviteBusy(false);
+      }
+    };
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const ok = window.confirm(`Deseja excluir ${title}? Essa ação não pode ser desfeita.`);
+      if (!ok) return;
+      void runDelete();
+      return;
+    }
+    Alert.alert('Excluir estúdio', `Deseja excluir ${title}? Essa ação não pode ser desfeita.`, [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Excluir', style: 'destructive', onPress: () => void runDelete() },
+    ]);
+  }, [onProfileUpdate, profile.studioName, profile.userId]);
 
   const toggleBandMembers = useCallback(
     async (bandId: string) => {
@@ -766,10 +757,7 @@ export function HomeScreen({
     else Alert.alert('Copiar', 'Não consegui copiar agora. Tente novamente em instantes.');
   };
 
-  const joinPlaceholder =
-    Platform.OS === 'web'
-      ? 'Cole aqui o código ou o link de convite'
-      : 'Cole aqui o código ou o link de convite';
+  const joinPlaceholder = 'Cole seu código de convite (banda ou estúdio)';
 
   return (
     <View style={[styles.root, { paddingBottom: insets.bottom + 16 }]}>
@@ -1324,34 +1312,12 @@ export function HomeScreen({
                   <View style={[styles.bandPathBadge, styles.bandPathBadgeAlt]}>
                     <Text style={styles.bandPathBadgeTxt}>2</Text>
                   </View>
-                  <Text style={styles.bandPathTitle}>Entrar com código de estúdio</Text>
+                  <Text style={styles.bandPathTitle}>Entrar com código universal</Text>
                 </View>
                 <Text style={styles.bandPathBody}>
-                  Cole o código ou link de convite para entrar no estúdio como administrador.
+                  Use o mesmo campo "Entrar com código" acima. Ele aceita convite de banda e de estúdio automaticamente.
                 </Text>
-                <Text style={styles.joinFieldLabel}>Código ou link de convite</Text>
-                <TextInput
-                  style={styles.joinInput}
-                  placeholder="Cole código ou link de convite"
-                  placeholderTextColor={COLORS.muted}
-                  value={studioJoinCode}
-                  onChangeText={setStudioJoinCode}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-                {studioJoinCode.trim().length > 0 ? (
-                  <Text style={styles.joinPreviewMuted}>
-                    {studioJoinPreview ? `Estúdio encontrado: ${studioJoinPreview}` : 'Verificando código...'}
-                  </Text>
-                ) : null}
-                <Pressable
-                  onPress={() => void applyJoinStudio()}
-                  style={({ pressed }) => [styles.joinBtn, (studioInviteBusy || pressed) && styles.pressed]}
-                  disabled={studioInviteBusy}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.joinBtnText}>Entrar como administrador</Text>
-                </Pressable>
+                <Text style={styles.joinPreviewMuted}>Se o código for de estúdio, você entra como administrador.</Text>
               </View>
             </View>
           </View>
@@ -1408,6 +1374,14 @@ export function HomeScreen({
                   </Pressable>
                   <Pressable onPress={onStudioAgenda} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
                     <Text style={styles.inviteBtnSecondaryText}>Gerenciar salas</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => void applyDeleteStudio()}
+                    disabled={studioInviteBusy}
+                    style={({ pressed }) => [styles.ownerCrudBtnDanger, studioInviteBusy && styles.joinBtnOff, pressed && !studioInviteBusy && styles.pressed]}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.ownerCrudBtnDangerText}>Excluir estúdio</Text>
                   </Pressable>
                 </View>
               </View>
@@ -1633,7 +1607,7 @@ export function HomeScreen({
               <Text style={styles.modalFieldLabel}>Nome do estúdio</Text>
               <TextInput
                 style={styles.modalInput}
-                placeholder="Ex.: Estúdio Aurora"
+                placeholder="Nome do estúdio"
                 placeholderTextColor={COLORS.muted}
                 value={studioNameDraft}
                 onChangeText={setStudioNameDraft}
@@ -1643,7 +1617,7 @@ export function HomeScreen({
               <Text style={styles.modalFieldLabel}>Endereço completo</Text>
               <TextInput
                 style={styles.modalInput}
-                placeholder="Rua, número, bairro, cidade"
+                placeholder="Endereço completo do estúdio"
                 placeholderTextColor={COLORS.muted}
                 value={studioAddressDraft}
                 onChangeText={setStudioAddressDraft}
@@ -1653,7 +1627,7 @@ export function HomeScreen({
               <Text style={styles.modalFieldLabel}>Link da foto do estúdio (opcional)</Text>
               <TextInput
                 style={styles.modalInput}
-                placeholder="https://..."
+                placeholder="Link da foto (opcional)"
                 placeholderTextColor={COLORS.muted}
                 value={studioPhotoDraft}
                 onChangeText={setStudioPhotoDraft}

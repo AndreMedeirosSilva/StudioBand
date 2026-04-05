@@ -4,6 +4,7 @@ import { buildInviteUrl, parseInviteToken } from '../lib/inviteLink';
 import { isInsecureLocalAuthAllowed, isSupabaseConfigured } from '../lib/supabase/config';
 import { getPasswordPolicyError, isValidEmail, normalizeEmail } from '../lib/auth/credentialsPolicy';
 import {
+  deleteManagedStudioRemote,
   getManagedStudioInviteTokenRemote,
   joinStudioWithInviteRemote,
   peekInviteStudioNameRemote,
@@ -732,4 +733,17 @@ export async function regenerateManagedStudioInvite(
     return regenerateManagedStudioInviteRemote(userId);
   }
   return { ok: false, message: 'Convite de estúdio requer Supabase configurado neste ambiente.' };
+}
+
+export async function deleteManagedStudio(userId: string): Promise<JoinBandResult> {
+  if (isSupabaseConfigured()) {
+    return deleteManagedStudioRemote(userId);
+  }
+  const r = await loadRegistry();
+  const user = r.users.find((u) => u.id === userId);
+  if (!user) return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  user.studioName = null;
+  user.ownerStudioId = null;
+  await saveRegistry(r);
+  return { ok: true, profile: buildProfileFromRegistry(r, user) };
 }

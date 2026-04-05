@@ -483,6 +483,40 @@ export async function regenerateManagedStudioInviteRemote(userId: string): Promi
   return { ok: true, inviteToken: token };
 }
 
+export async function deleteManagedStudioRemote(userId: string): Promise<RemoteLoginResult> {
+  const sb = getSupabase();
+  const user = await resolveAuthUser(sb);
+  if (!user || user.id !== userId) {
+    return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  }
+  const studio = await getManagedStudioSummaryForUser(sb, userId);
+  if (!studio) {
+    return { ok: false, message: 'Você ainda não administra nenhum estúdio.' };
+  }
+
+  const { error: rpcErr } = await sb.rpc('admin_delete_studio', { p_studio_id: studio.id });
+  if (rpcErr) {
+    const raw = (rpcErr.message ?? '').toLowerCase();
+    const rpcMissing = isMissingRpcError(raw, 'admin_delete_studio');
+    if (!rpcMissing) {
+      if (raw.includes('not_admin')) return { ok: false, message: 'Somente administradores podem excluir este estúdio.' };
+      if (raw.includes('studio_not_found')) return { ok: false, message: 'Estúdio não encontrado.' };
+      return { ok: false, message: mapDbError(rpcErr.message) };
+    }
+    // Fallback legado: só owner consegue excluir diretamente.
+    const { error: fallbackErr } = await sb
+      .from('studios')
+      .delete()
+      .eq('id', studio.id)
+      .eq('owner_user_id', userId);
+    if (fallbackErr) return { ok: false, message: mapDbError(fallbackErr.message) };
+  }
+
+  const profile = await buildPersistedProfileForUser(user);
+  if (!profile) return { ok: false, message: 'Estúdio excluído, mas falhou ao atualizar seu perfil.' };
+  return { ok: true, profile };
+}
+
 export async function loginWithPasswordRemote(email: string, password: string): Promise<RemoteLoginResult> {
   const e = normalizeEmail(email);
   const sb = getSupabase();
