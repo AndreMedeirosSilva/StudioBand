@@ -58,7 +58,9 @@ async function getManagedStudioSummaryForUser(
 ): Promise<RemoteStudioSummary | null> {
   const { data: rpcData, error: rpcErr } = await sb.rpc('get_managed_studio_summary');
   if (!rpcErr && rpcData) {
-    const row = rpcData as {
+    const rawRow = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    if (!rawRow) return null;
+    const row = rawRow as {
       studio_id: string;
       studio_name: string;
       address_line: string | null;
@@ -457,8 +459,11 @@ export async function getManagedStudioInviteTokenRemote(userId: string): Promise
     data: { user },
   } = await sb.auth.getUser();
   if (!user || user.id !== userId) return null;
-  const row = await getManagedStudioSummaryForUser(sb, userId);
-  return row?.inviteToken ?? null;
+  const studio = await getManagedStudioSummaryForUser(sb, userId);
+  if (!studio) return null;
+  if (studio.inviteToken?.trim()) return studio.inviteToken.trim();
+  const regen = await regenerateManagedStudioInviteRemote(userId);
+  return regen.ok ? regen.inviteToken : null;
 }
 
 export async function regenerateManagedStudioInviteRemote(userId: string): Promise<{ ok: true; inviteToken: string } | { ok: false; message: string }> {

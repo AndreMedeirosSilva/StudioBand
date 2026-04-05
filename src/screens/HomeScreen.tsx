@@ -108,7 +108,7 @@ export function HomeScreen({
   const [editBandPhotoUrl, setEditBandPhotoUrl] = useState('');
   const [editBandId, setEditBandId] = useState<string | null>(null);
   const [bandCrudBusy, setBandCrudBusy] = useState(false);
-  const [studioFormOpen, setStudioFormOpen] = useState(false);
+  const [studioModalOpen, setStudioModalOpen] = useState(false);
   const [studioNameDraft, setStudioNameDraft] = useState('');
   const [studioAddressDraft, setStudioAddressDraft] = useState('');
   const [studioPhotoDraft, setStudioPhotoDraft] = useState('');
@@ -282,7 +282,7 @@ export function HomeScreen({
         }
         onProfileUpdate(res.profile);
         onUpsertStudio({ studioName: name, addressLine: address, photoUrl: normalizedPhoto });
-        setStudioFormOpen(false);
+        setStudioModalOpen(false);
         const token = await refreshStudioInviteToken(profile.userId, true);
         if (token) {
           Alert.alert('Estúdio salvo', `Cadastro atualizado.\n\nCódigo do estúdio:\n${token}`);
@@ -1283,136 +1283,142 @@ export function HomeScreen({
           )}
         </View>
 
-        <Text style={styles.section}>Estúdio</Text>
-        <View style={styles.card}>
-          {ownerStudio.logoUri ? <Image source={{ uri: ownerStudio.logoUri }} style={styles.studioThumb} /> : null}
-          {profile.studioName ? <Text style={styles.roleLine}>{profile.studioName}</Text> : null}
-          {ownerStudio.addressLine ? <Text style={styles.muted}>{ownerStudio.addressLine}</Text> : null}
-          {!profile.studioName ? (
-            <Text style={styles.muted}>Cadastre seu estúdio com endereço, foto e salas com preço individual.</Text>
-          ) : null}
-          <View style={styles.studioActionsRow}>
-            <Pressable
-              onPress={() => setStudioFormOpen((prev) => !prev)}
-              style={({ pressed }) => [styles.secondaryMiniBtn, pressed && styles.pressed]}
-              accessibilityRole="button"
-            >
-              <Text style={styles.secondaryMiniBtnText}>{studioFormOpen ? 'Fechar cadastro' : profile.studioName ? 'Editar cadastro' : 'Cadastrar estúdio'}</Text>
-            </Pressable>
-            {profile.studioName ? (
-              <Pressable
-                onPress={onStudioAgenda}
-                style={({ pressed }) => [styles.secondaryMiniBtn, pressed && styles.pressed]}
-                accessibilityRole="button"
-              >
-                <Text style={styles.secondaryMiniBtnText}>Gerenciar salas</Text>
-              </Pressable>
-            ) : null}
-          </View>
-          {studioFormOpen ? (
-            <View style={styles.studioFormWrap}>
-              <Text style={styles.modalFieldLabel}>Nome do estúdio</Text>
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Ex.: Estúdio Aurora"
-                placeholderTextColor={COLORS.muted}
-                value={studioNameDraft}
-                onChangeText={setStudioNameDraft}
-              />
-              <Text style={styles.modalFieldLabel}>Endereço completo</Text>
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Rua, número, bairro, cidade"
-                placeholderTextColor={COLORS.muted}
-                value={studioAddressDraft}
-                onChangeText={setStudioAddressDraft}
-              />
-              <Text style={styles.modalFieldLabel}>Link da foto do estúdio (opcional)</Text>
-              <TextInput
-                style={styles.modalInput}
-                placeholder="https://..."
-                placeholderTextColor={COLORS.muted}
-                value={studioPhotoDraft}
-                onChangeText={setStudioPhotoDraft}
-              />
-              <Pressable
-                onPress={submitStudioProfile}
-                style={({ pressed }) => [styles.registerBandBtn, (studioInviteBusy || pressed) && styles.pressed]}
-                disabled={studioInviteBusy}
-                accessibilityRole="button"
-              >
-                <Text style={styles.registerBandBtnText}>Salvar estúdio</Text>
-              </Pressable>
-            </View>
-          ) : null}
-          <View style={styles.studioFormWrap}>
-            {profile.studioName ? (
-              <View style={[styles.invitePanel, styles.invitePanelActive]}>
-                <View style={styles.invitePanelAccent} />
-                <View style={styles.invitePanelInner}>
-                  <Text style={styles.invitePanelKicker}>Convite do estúdio</Text>
-                  <Text style={styles.invitePanelTitle}>{profile.studioName}</Text>
-                  <Text style={styles.invitePanelLead}>
-                    Mesmo layout de bandas: compartilhe o código abaixo para convidar outro administrador.
-                  </Text>
-                  {studioInviteToken ? (
-                    <View style={styles.inviteTokenBlock}>
-                      <Text style={styles.inviteTokenLabel}>Código</Text>
-                      <Text selectable style={styles.inviteTokenValue}>
-                        {studioInviteToken}
-                      </Text>
-                    </View>
-                  ) : (
-                    <Text style={styles.joinPreviewMuted}>Sem código disponível no momento.</Text>
-                  )}
-                  {studioInviteToken ? (
-                    <View style={styles.inviteUrlBox}>
-                      <Text selectable style={styles.inviteUrlMono}>{buildInviteUrl(studioInviteToken)}</Text>
-                    </View>
-                  ) : null}
-                  <View style={styles.inviteActions}>
-                    <Pressable onPress={() => void copyStudioInviteCode()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
-                      <Text style={styles.inviteBtnSecondaryText}>Copiar código</Text>
-                    </Pressable>
-                    <Pressable onPress={() => void copyStudioInviteLink()} style={({ pressed }) => [styles.inviteBtn, pressed && styles.pressed]} accessibilityRole="button">
-                      <Text style={styles.inviteBtnText}>Copiar link</Text>
-                    </Pressable>
-                    <Pressable onPress={() => void shareStudioInvite()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
-                      <Text style={styles.inviteBtnSecondaryText}>Compartilhar</Text>
-                    </Pressable>
-                    <Pressable onPress={() => void applyRegenerateStudioInvite()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
-                      <Text style={styles.inviteBtnSecondaryText}>Novo código</Text>
-                    </Pressable>
+        <View style={styles.bandHub}>
+          <Text style={styles.bandHubEyebrow}>Estúdio e convites</Text>
+          <Text style={styles.bandHubTitle}>Cadastro de estúdio no mesmo padrão de bandas</Text>
+          <Text style={styles.bandHubLead}>
+            Cadastre os dados do estúdio e use o convite para compartilhar administração com outras pessoas.
+          </Text>
+
+          <View style={[styles.bandHubGrid, width >= 640 && styles.bandHubGridWide]}>
+            <View style={[styles.bandHubCol, width >= 640 && styles.bandHubColWide]}>
+              <View style={styles.bandPathCard}>
+                <View style={styles.bandPathHead}>
+                  <View style={styles.bandPathBadge}>
+                    <Text style={styles.bandPathBadgeTxt}>1</Text>
                   </View>
+                  <Text style={styles.bandPathTitle}>{profile.studioName ? 'Editar estúdio' : 'Cadastrar estúdio'}</Text>
+                </View>
+                <Text style={styles.bandPathBody}>
+                  Mesmo formato da banda: abra o modal, informe nome, endereço e foto, depois salve.
+                </Text>
+                <Pressable
+                  onPress={() => setStudioModalOpen(true)}
+                  style={({ pressed }) => [styles.registerBandBtn, pressed && styles.pressed]}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.registerBandBtnText}>{profile.studioName ? 'Editar cadastro' : 'Cadastrar estúdio'}</Text>
+                </Pressable>
+                {profile.studioName ? (
+                  <>
+                    <Text style={styles.bandOwnerNote}>{profile.studioName}</Text>
+                    {ownerStudio.addressLine ? <Text style={styles.bandOwnerNote}>{ownerStudio.addressLine}</Text> : null}
+                  </>
+                ) : null}
+              </View>
+            </View>
+
+            <View style={[styles.bandHubCol, width >= 640 && styles.bandHubColWide]}>
+              <View style={styles.bandPathCard}>
+                <View style={styles.bandPathHead}>
+                  <View style={[styles.bandPathBadge, styles.bandPathBadgeAlt]}>
+                    <Text style={styles.bandPathBadgeTxt}>2</Text>
+                  </View>
+                  <Text style={styles.bandPathTitle}>Entrar com código de estúdio</Text>
+                </View>
+                <Text style={styles.bandPathBody}>
+                  Cole o código ou link de convite para entrar no estúdio como administrador.
+                </Text>
+                <Text style={styles.joinFieldLabel}>Código ou link de convite</Text>
+                <TextInput
+                  style={styles.joinInput}
+                  placeholder="Cole código ou link de convite"
+                  placeholderTextColor={COLORS.muted}
+                  value={studioJoinCode}
+                  onChangeText={setStudioJoinCode}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                {studioJoinCode.trim().length > 0 ? (
+                  <Text style={styles.joinPreviewMuted}>
+                    {studioJoinPreview ? `Estúdio encontrado: ${studioJoinPreview}` : 'Verificando código...'}
+                  </Text>
+                ) : null}
+                <Pressable
+                  onPress={() => void applyJoinStudio()}
+                  style={({ pressed }) => [styles.joinBtn, (studioInviteBusy || pressed) && styles.pressed]}
+                  disabled={studioInviteBusy}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.joinBtnText}>Entrar como administrador</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.bandHubDivider} />
+
+          {profile.studioName ? (
+            <View style={[styles.invitePanel, styles.invitePanelActive]}>
+              <View style={styles.invitePanelAccent} />
+              <View style={styles.invitePanelInner}>
+                <Text style={styles.invitePanelKicker}>Convite do estúdio</Text>
+                <View style={styles.bandIdentityHero}>
+                  <View style={styles.bandAvatarHeroWrap}>
+                    {ownerStudio.logoUri ? (
+                      <Image source={{ uri: ownerStudio.logoUri }} style={styles.bandAvatarHeroImg} />
+                    ) : (
+                      <Text style={styles.bandAvatarHeroFallback}>{profile.studioName.slice(0, 2).toUpperCase()}</Text>
+                    )}
+                  </View>
+                  <Text style={styles.invitePanelTitle}>{profile.studioName}</Text>
+                </View>
+                <Text style={styles.invitePanelLead}>
+                  Layout e ações iguais aos convites de banda: copie o código, o link ou compartilhe direto.
+                </Text>
+                {studioInviteToken ? (
+                  <View style={styles.inviteTokenBlock}>
+                    <Text style={styles.inviteTokenLabel}>Código</Text>
+                    <Text selectable style={styles.inviteTokenValue}>
+                      {studioInviteToken}
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={styles.joinPreviewMuted}>
+                    Ainda sem código visível. Toque em "Novo código" para gerar agora.
+                  </Text>
+                )}
+                {studioInviteToken ? (
+                  <View style={styles.inviteUrlBox}>
+                    <Text selectable style={styles.inviteUrlMono}>{buildInviteUrl(studioInviteToken)}</Text>
+                  </View>
+                ) : null}
+                <View style={styles.inviteActions}>
+                  <Pressable onPress={() => void copyStudioInviteCode()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
+                    <Text style={styles.inviteBtnSecondaryText}>Copiar código</Text>
+                  </Pressable>
+                  <Pressable onPress={() => void copyStudioInviteLink()} style={({ pressed }) => [styles.inviteBtn, pressed && styles.pressed]} accessibilityRole="button">
+                    <Text style={styles.inviteBtnText}>Copiar link</Text>
+                  </Pressable>
+                  <Pressable onPress={() => void shareStudioInvite()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
+                    <Text style={styles.inviteBtnSecondaryText}>Compartilhar</Text>
+                  </Pressable>
+                  <Pressable onPress={() => void applyRegenerateStudioInvite()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
+                    <Text style={styles.inviteBtnSecondaryText}>Novo código</Text>
+                  </Pressable>
+                  <Pressable onPress={onStudioAgenda} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
+                    <Text style={styles.inviteBtnSecondaryText}>Gerenciar salas</Text>
+                  </Pressable>
                 </View>
               </View>
-            ) : (
-              <View style={styles.invitePlaceholder}>
-                <Text style={styles.invitePlaceholderText}>
-                  Cadastre um estúdio para gerar o código e compartilhar convite com outros administradores.
-                </Text>
-              </View>
-            )}
-            <Text style={[styles.modalFieldLabel, { marginTop: 12 }]}>Entrar em estúdio por convite</Text>
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Cole código ou link de convite"
-              placeholderTextColor={COLORS.muted}
-              value={studioJoinCode}
-              onChangeText={setStudioJoinCode}
-            />
-            {studioJoinCode.trim().length > 0 ? (
-              <Text style={styles.joinPreviewMuted}>{studioJoinPreview ? `Estúdio encontrado: ${studioJoinPreview}` : 'Verificando código...'}</Text>
-            ) : null}
-            <Pressable
-              onPress={() => void applyJoinStudio()}
-              style={({ pressed }) => [styles.joinBtn, (studioInviteBusy || pressed) && styles.pressed]}
-              disabled={studioInviteBusy}
-              accessibilityRole="button"
-            >
-              <Text style={styles.joinBtnText}>Entrar como administrador</Text>
-            </Pressable>
-          </View>
+            </View>
+          ) : (
+            <View style={styles.invitePlaceholder}>
+              <Text style={styles.invitePlaceholderText}>
+                Cadastre um estúdio para gerar o código e compartilhar convite com outros administradores.
+              </Text>
+            </View>
+          )}
         </View>
 
         <Text style={styles.section}>Resumo (demonstração)</Text>
@@ -1596,6 +1602,92 @@ export function HomeScreen({
                     <ActivityIndicator color={COLORS.accentText} />
                   ) : (
                     <Text style={styles.modalBtnPrimaryText}>Salvar alterações</Text>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={studioModalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !studioInviteBusy && setStudioModalOpen(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalAvoid}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={styles.modalWrap}>
+            <Pressable
+              style={styles.modalBackdrop}
+              onPress={() => !studioInviteBusy && setStudioModalOpen(false)}
+              accessibilityRole="button"
+              accessibilityLabel="Fechar"
+            />
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>{profile.studioName ? 'Editar estúdio' : 'Cadastrar estúdio'}</Text>
+              <Text style={styles.modalLead}>Mesmo fluxo de bandas: preencha os dados e salve para gerar/atualizar o convite.</Text>
+              <Text style={styles.modalFieldLabel}>Nome do estúdio</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="Ex.: Estúdio Aurora"
+                placeholderTextColor={COLORS.muted}
+                value={studioNameDraft}
+                onChangeText={setStudioNameDraft}
+                editable={!studioInviteBusy}
+                autoCorrect={false}
+              />
+              <Text style={styles.modalFieldLabel}>Endereço completo</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="Rua, número, bairro, cidade"
+                placeholderTextColor={COLORS.muted}
+                value={studioAddressDraft}
+                onChangeText={setStudioAddressDraft}
+                editable={!studioInviteBusy}
+                autoCorrect={false}
+              />
+              <Text style={styles.modalFieldLabel}>Link da foto do estúdio (opcional)</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="https://..."
+                placeholderTextColor={COLORS.muted}
+                value={studioPhotoDraft}
+                onChangeText={setStudioPhotoDraft}
+                editable={!studioInviteBusy}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {normalizePhotoUrl(studioPhotoDraft) ? (
+                <Image source={{ uri: normalizePhotoUrl(studioPhotoDraft) ?? '' }} style={styles.modalPhotoPreview} />
+              ) : (
+                <Text style={styles.modalHint}>Dica: use um link público https para exibir a foto do estúdio.</Text>
+              )}
+              <View style={styles.modalActions}>
+                <Pressable
+                  onPress={() => !studioInviteBusy && setStudioModalOpen(false)}
+                  style={({ pressed }) => [styles.modalBtnGhost, pressed && styles.pressed]}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.modalBtnGhostText}>Cancelar</Text>
+                </Pressable>
+                <Pressable
+                  onPress={submitStudioProfile}
+                  disabled={studioInviteBusy}
+                  style={({ pressed }) => [
+                    styles.modalBtnPrimary,
+                    studioInviteBusy && styles.joinBtnOff,
+                    pressed && !studioInviteBusy && styles.pressed,
+                  ]}
+                  accessibilityRole="button"
+                >
+                  {studioInviteBusy ? (
+                    <ActivityIndicator color={COLORS.accentText} />
+                  ) : (
+                    <Text style={styles.modalBtnPrimaryText}>Salvar estúdio</Text>
                   )}
                 </Pressable>
               </View>
