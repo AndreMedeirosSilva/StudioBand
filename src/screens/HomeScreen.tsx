@@ -97,6 +97,7 @@ export function HomeScreen({
   const [expandedMemberBands, setExpandedMemberBands] = useState<Record<string, boolean>>({});
   const [joinCode, setJoinCode] = useState('');
   const [joinBandPreview, setJoinBandPreview] = useState<string | null>(null);
+  const [joinStudioPreviewMain, setJoinStudioPreviewMain] = useState<string | null>(null);
   const [joinBusy, setJoinBusy] = useState(false);
   const [bandModalOpen, setBandModalOpen] = useState(false);
   const [newBandName, setNewBandName] = useState('');
@@ -162,13 +163,30 @@ export function HomeScreen({
     const t = joinCode.trim();
     if (!t) {
       setJoinBandPreview(null);
+      setJoinStudioPreviewMain(null);
       return;
     }
     const id = setTimeout(() => {
-      void peekInviteBandName(t).then(setJoinBandPreview);
+      void Promise.all([peekInviteBandName(t), peekInviteStudioName(t)]).then(([bandName, studioName]) => {
+        setJoinBandPreview(bandName);
+        setJoinStudioPreviewMain(studioName);
+      });
     }, 400);
     return () => clearTimeout(id);
   }, [joinCode]);
+
+  const refreshStudioInviteToken = useCallback(
+    async (userId: string, autoGenerate = false): Promise<string | null> => {
+      let token = await getManagedStudioInviteToken(userId);
+      if (!token && autoGenerate) {
+        const regen = await regenerateManagedStudioInvite(userId);
+        if (regen.ok) token = regen.inviteToken;
+      }
+      setStudioInviteToken(token);
+      return token;
+    },
+    [],
+  );
 
   useEffect(() => {
     setStudioNameDraft(profile.studioName ?? '');
@@ -181,8 +199,8 @@ export function HomeScreen({
       setStudioInviteToken(null);
       return;
     }
-    void getManagedStudioInviteToken(profile.userId).then(setStudioInviteToken);
-  }, [profile.userId, profile.studioName]);
+    void refreshStudioInviteToken(profile.userId, true);
+  }, [profile.userId, profile.studioName, refreshStudioInviteToken]);
 
   useEffect(() => {
     const t = studioJoinCode.trim();
@@ -265,14 +283,20 @@ export function HomeScreen({
         onProfileUpdate(res.profile);
         onUpsertStudio({ studioName: name, addressLine: address, photoUrl: normalizedPhoto });
         setStudioFormOpen(false);
-        const token = await getManagedStudioInviteToken(profile.userId);
-        setStudioInviteToken(token);
-        Alert.alert('Estúdio salvo', token ? `Cadastro atualizado.\n\nCódigo do estúdio:\n${token}` : 'Cadastro atualizado com sucesso.');
+        const token = await refreshStudioInviteToken(profile.userId, true);
+        if (token) {
+          Alert.alert('Estúdio salvo', `Cadastro atualizado.\n\nCódigo do estúdio:\n${token}`);
+        } else {
+          Alert.alert(
+            'Estúdio salvo',
+            'Cadastro atualizado, mas o código de convite não foi gerado ainda. Toque em "Novo código" para tentar novamente.',
+          );
+        }
       } finally {
         setStudioInviteBusy(false);
       }
     })();
-  }, [onProfileUpdate, onUpsertStudio, profile.userId, studioAddressDraft, studioNameDraft, studioPhotoDraft]);
+  }, [onProfileUpdate, onUpsertStudio, profile.userId, studioAddressDraft, studioNameDraft, studioPhotoDraft, refreshStudioInviteToken]);
 
   const copyStudioInviteCode = useCallback(async () => {
     if (!studioInviteToken) return;
@@ -315,8 +339,7 @@ export function HomeScreen({
           return;
         }
         onProfileUpdate(res.profile);
-        const token = await getManagedStudioInviteToken(profile.userId);
-        setStudioInviteToken(token);
+        await refreshStudioInviteToken(profile.userId, true);
         setStudioJoinCode('');
         setStudioJoinPreview(null);
         Alert.alert('Pronto', 'Você agora é administrador do estúdio.');
@@ -324,7 +347,7 @@ export function HomeScreen({
         setStudioInviteBusy(false);
       }
     })();
-  }, [onProfileUpdate, profile.userId, studioJoinCode]);
+  }, [onProfileUpdate, profile.userId, studioJoinCode, refreshStudioInviteToken]);
 
   const applyRegenerateStudioInvite = useCallback(() => {
     if (!profile.userId) return;
@@ -404,7 +427,7 @@ export function HomeScreen({
     }
   }, [newBandName, newBandPhotoUrl, profile.userId, onProfileUpdate, refreshBandData, saveBandPhoto]);
 
-  const applyJoinBand = useCallback(async () => {
+  const applyJoinWithCode = useCallback(async () => {
     const code = joinCode.trim();
     if (!code) {
       Alert.alert('Convite', 'Cole aqui o código ou o link de convite que você recebeu.');
@@ -413,20 +436,42 @@ export function HomeScreen({
     if (!profile.userId) return;
     setJoinBusy(true);
     try {
-      const res = await joinBandWithInvite(profile.userId, code);
-      if (!res.ok) {
-        Alert.alert('Convite', res.message);
+      const [bandName, studioName] = await Promise.all([peekInviteBandName(code), peekInviteStudioName(code)]);
+      if (bandName) {
+        const resBand = await joinBandWithInvite(profile.userId, code);
+        if (resBand.ok) {
+          onProfileUpdate(resBand.profile);
+          await refreshBandData();
+          setJoinCode('');
+          setJoinBandPreview(null);
+          setJoinStudioPreviewMain(null);
+          Alert.alert('Banda', 'Você entrou na banda.');
+          return;
+        }
+        if (!studioName) {
+          Alert.alert('Convite', resBand.message);
+          return;
+        }
+      }
+      if (studioName) {
+        const resStudio = await joinStudioWithInvite(profile.userId, code);
+        if (!resStudio.ok) {
+          Alert.alert('Convite', resStudio.message);
+          return;
+        }
+        onProfileUpdate(resStudio.profile);
+        await refreshStudioInviteToken(profile.userId, true);
+        setJoinCode('');
+        setJoinBandPreview(null);
+        setJoinStudioPreviewMain(null);
+        Alert.alert('Estúdio', 'Você entrou como administrador do estúdio.');
         return;
       }
-      onProfileUpdate(res.profile);
-      await refreshBandData();
-      setJoinCode('');
-      setJoinBandPreview(null);
-      Alert.alert('Banda', 'Você entrou na banda.');
+      Alert.alert('Convite', 'Código não encontrado para banda nem estúdio.');
     } finally {
       setJoinBusy(false);
     }
-  }, [joinCode, profile.userId, onProfileUpdate, refreshBandData]);
+  }, [joinCode, profile.userId, onProfileUpdate, refreshBandData, refreshStudioInviteToken]);
 
   const openEditBandModal = useCallback((bandId: string, bandName: string, bandPhotoUrl: string | null) => {
     setEditBandId(bandId);
@@ -960,13 +1005,19 @@ export function HomeScreen({
                     autoCapitalize="none"
                     autoCorrect={false}
                   />
-                  {joinBandPreview ? (
-                    <Text style={styles.joinPreview}>Banda encontrada: {joinBandPreview}</Text>
+                  {joinBandPreview || joinStudioPreviewMain ? (
+                    <Text style={styles.joinPreview}>
+                      {joinBandPreview && joinStudioPreviewMain
+                        ? `Encontrado em banda (${joinBandPreview}) e estúdio (${joinStudioPreviewMain})`
+                        : joinBandPreview
+                          ? `Banda encontrada: ${joinBandPreview}`
+                          : `Estúdio encontrado: ${joinStudioPreviewMain}`}
+                    </Text>
                   ) : joinCode.trim().length > 0 ? (
-                    <Text style={styles.joinPreviewMuted}>A validar… se existir aqui, o nome da banda aparece.</Text>
+                    <Text style={styles.joinPreviewMuted}>Validando código para banda e estúdio…</Text>
                   ) : null}
                   <Pressable
-                    onPress={() => void applyJoinBand()}
+                    onPress={() => void applyJoinWithCode()}
                     disabled={joinBusy}
                     style={({ pressed }) => [styles.joinBtn, joinBusy && styles.joinBtnOff, pressed && !joinBusy && styles.pressed]}
                     accessibilityRole="button"
@@ -974,7 +1025,7 @@ export function HomeScreen({
                     {joinBusy ? (
                       <ActivityIndicator color={COLORS.accentText} />
                     ) : (
-                      <Text style={styles.joinBtnText}>Entrar na banda</Text>
+                      <Text style={styles.joinBtnText}>Entrar com código</Text>
                     )}
                   </Pressable>
                 </View>
@@ -1294,51 +1345,74 @@ export function HomeScreen({
               </Pressable>
             </View>
           ) : null}
-          {profile.studioName ? (
-            <View style={styles.studioFormWrap}>
-              <Text style={styles.modalFieldLabel}>Convite do estúdio</Text>
-              {studioInviteToken ? (
-                <View style={styles.inviteTokenBlock}>
-                  <Text selectable style={styles.inviteTokenValue}>{studioInviteToken}</Text>
+          <View style={styles.studioFormWrap}>
+            {profile.studioName ? (
+              <View style={[styles.invitePanel, styles.invitePanelActive]}>
+                <View style={styles.invitePanelAccent} />
+                <View style={styles.invitePanelInner}>
+                  <Text style={styles.invitePanelKicker}>Convite do estúdio</Text>
+                  <Text style={styles.invitePanelTitle}>{profile.studioName}</Text>
+                  <Text style={styles.invitePanelLead}>
+                    Mesmo layout de bandas: compartilhe o código abaixo para convidar outro administrador.
+                  </Text>
+                  {studioInviteToken ? (
+                    <View style={styles.inviteTokenBlock}>
+                      <Text style={styles.inviteTokenLabel}>Código</Text>
+                      <Text selectable style={styles.inviteTokenValue}>
+                        {studioInviteToken}
+                      </Text>
+                    </View>
+                  ) : (
+                    <Text style={styles.joinPreviewMuted}>Sem código disponível no momento.</Text>
+                  )}
+                  {studioInviteToken ? (
+                    <View style={styles.inviteUrlBox}>
+                      <Text selectable style={styles.inviteUrlMono}>{buildInviteUrl(studioInviteToken)}</Text>
+                    </View>
+                  ) : null}
+                  <View style={styles.inviteActions}>
+                    <Pressable onPress={() => void copyStudioInviteCode()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
+                      <Text style={styles.inviteBtnSecondaryText}>Copiar código</Text>
+                    </Pressable>
+                    <Pressable onPress={() => void copyStudioInviteLink()} style={({ pressed }) => [styles.inviteBtn, pressed && styles.pressed]} accessibilityRole="button">
+                      <Text style={styles.inviteBtnText}>Copiar link</Text>
+                    </Pressable>
+                    <Pressable onPress={() => void shareStudioInvite()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
+                      <Text style={styles.inviteBtnSecondaryText}>Compartilhar</Text>
+                    </Pressable>
+                    <Pressable onPress={() => void applyRegenerateStudioInvite()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
+                      <Text style={styles.inviteBtnSecondaryText}>Novo código</Text>
+                    </Pressable>
+                  </View>
                 </View>
-              ) : (
-                <Text style={styles.joinPreviewMuted}>Sem código disponível no momento.</Text>
-              )}
-              <View style={styles.inviteActions}>
-                <Pressable onPress={() => void copyStudioInviteCode()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
-                  <Text style={styles.inviteBtnSecondaryText}>Copiar código</Text>
-                </Pressable>
-                <Pressable onPress={() => void copyStudioInviteLink()} style={({ pressed }) => [styles.inviteBtn, pressed && styles.pressed]} accessibilityRole="button">
-                  <Text style={styles.inviteBtnText}>Copiar link</Text>
-                </Pressable>
-                <Pressable onPress={() => void shareStudioInvite()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
-                  <Text style={styles.inviteBtnSecondaryText}>Compartilhar</Text>
-                </Pressable>
-                <Pressable onPress={() => void applyRegenerateStudioInvite()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
-                  <Text style={styles.inviteBtnSecondaryText}>Novo código</Text>
-                </Pressable>
               </View>
-              <Text style={[styles.modalFieldLabel, { marginTop: 12 }]}>Entrar em estúdio por convite</Text>
-              <TextInput
-                style={styles.modalInput}
-                placeholder="Cole código ou link de convite"
-                placeholderTextColor={COLORS.muted}
-                value={studioJoinCode}
-                onChangeText={setStudioJoinCode}
-              />
-              {studioJoinCode.trim().length > 0 ? (
-                <Text style={styles.joinPreviewMuted}>{studioJoinPreview ? `Estúdio encontrado: ${studioJoinPreview}` : 'Verificando código...'}</Text>
-              ) : null}
-              <Pressable
-                onPress={() => void applyJoinStudio()}
-                style={({ pressed }) => [styles.joinBtn, (studioInviteBusy || pressed) && styles.pressed]}
-                disabled={studioInviteBusy}
-                accessibilityRole="button"
-              >
-                <Text style={styles.joinBtnText}>Entrar como administrador</Text>
-              </Pressable>
-            </View>
-          ) : null}
+            ) : (
+              <View style={styles.invitePlaceholder}>
+                <Text style={styles.invitePlaceholderText}>
+                  Cadastre um estúdio para gerar o código e compartilhar convite com outros administradores.
+                </Text>
+              </View>
+            )}
+            <Text style={[styles.modalFieldLabel, { marginTop: 12 }]}>Entrar em estúdio por convite</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Cole código ou link de convite"
+              placeholderTextColor={COLORS.muted}
+              value={studioJoinCode}
+              onChangeText={setStudioJoinCode}
+            />
+            {studioJoinCode.trim().length > 0 ? (
+              <Text style={styles.joinPreviewMuted}>{studioJoinPreview ? `Estúdio encontrado: ${studioJoinPreview}` : 'Verificando código...'}</Text>
+            ) : null}
+            <Pressable
+              onPress={() => void applyJoinStudio()}
+              style={({ pressed }) => [styles.joinBtn, (studioInviteBusy || pressed) && styles.pressed]}
+              disabled={studioInviteBusy}
+              accessibilityRole="button"
+            >
+              <Text style={styles.joinBtnText}>Entrar como administrador</Text>
+            </Pressable>
+          </View>
         </View>
 
         <Text style={styles.section}>Resumo (demonstração)</Text>
