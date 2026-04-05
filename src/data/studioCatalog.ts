@@ -284,7 +284,7 @@ export function listStudiosForBooking(
     isMine: false,
     logoUri: s.logoUri,
   }));
-  if (profile.ownerStudioId && profile.studioName) {
+  if (profile.ownerStudioId && profile.studioName && owner.rooms.length > 0) {
     rows.unshift({
       id: profile.ownerStudioId,
       name: profile.studioName,

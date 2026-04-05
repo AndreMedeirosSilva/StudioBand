@@ -13,6 +13,7 @@ import {
   DEMO_OWNER_LOGO_URI,
   normalizeOwnerStudioState,
   type OwnerStudioState,
+  type StudioRoom,
 } from '../data/studioCatalog';
 import {
   loadPersistedSession,
@@ -28,9 +29,9 @@ import { COLORS } from '../theme';
 
 export type { UserProfile };
 
-export type Screen = 'auth' | 'register' | 'home' | 'booking' | 'studioAgenda';
+export type Screen = 'auth' | 'register' | 'home' | 'bands' | 'studios' | 'booking' | 'studioAgenda';
 
-const SCREENS: Screen[] = ['auth', 'register', 'home', 'booking', 'studioAgenda'];
+const SCREENS: Screen[] = ['auth', 'register', 'home', 'bands', 'studios', 'booking', 'studioAgenda'];
 
 const initialProfile: UserProfile = {
   userId: '',
@@ -232,7 +233,7 @@ export function AppNavigator() {
   useEffect(() => {
     if (!hydrated) return;
     const loggedIn = Boolean(profile.userId);
-    const gated: Screen[] = ['home', 'booking', 'studioAgenda'];
+    const gated: Screen[] = ['home', 'bands', 'studios', 'booking', 'studioAgenda'];
     if (!loggedIn && gated.includes(screen)) {
       setScreen('auth');
     }
@@ -249,6 +250,8 @@ export function AppNavigator() {
       auth: 'Entrar',
       register: 'Cadastro',
       home: 'Painel',
+      bands: 'Bandas',
+      studios: 'Estúdios',
       booking: 'Marcar ensaio',
       studioAgenda: 'Agenda do estúdio',
     };
@@ -298,7 +301,7 @@ export function AppNavigator() {
   }, [profile.ownerStudioId, screen]);
 
   const handleUpsertStudio = useCallback(
-    (input: { studioName: string; addressLine: string; photoUrl: string | null }) => {
+    (input: { studioName: string; addressLine: string; photoUrl: string | null; rooms: StudioRoom[] }) => {
       const trimmedName = input.studioName.trim();
       const studioName = trimmedName || 'Meu estúdio';
       const studioId =
@@ -316,6 +319,7 @@ export function AppNavigator() {
         ...baseOwner,
         addressLine: input.addressLine.trim(),
         logoUri: input.photoUrl,
+        rooms: input.rooms.length > 0 ? input.rooms : baseOwner.rooms,
       });
       setProfile(nextProfile);
       setOwnerStudio(nextOwner);
@@ -357,6 +361,37 @@ export function AppNavigator() {
           onConsumeJoinPrefill={consumeJoinPrefill}
           onProfileUpdate={handleProfileUpdate}
           onUpsertStudio={handleUpsertStudio}
+          mode="home"
+          onGoBands={go('bands')}
+          onGoStudios={go('studios')}
+        />
+      );
+    case 'bands':
+      return (
+        <HomeScreen
+          profile={profile}
+          ownerStudio={ownerStudio}
+          onBook={go('booking')}
+          onStudioAgenda={go('studioAgenda')}
+          onLogout={handleLogout}
+          onProfileUpdate={handleProfileUpdate}
+          onUpsertStudio={handleUpsertStudio}
+          mode="bandas"
+          onBackHome={go('home')}
+        />
+      );
+    case 'studios':
+      return (
+        <HomeScreen
+          profile={profile}
+          ownerStudio={ownerStudio}
+          onBook={go('booking')}
+          onStudioAgenda={go('studioAgenda')}
+          onLogout={handleLogout}
+          onProfileUpdate={handleProfileUpdate}
+          onUpsertStudio={handleUpsertStudio}
+          mode="estudios"
+          onBackHome={go('home')}
         />
       );
     case 'studioAgenda':
@@ -367,6 +402,8 @@ export function AppNavigator() {
           onLogout={handleLogout}
           ownerStudio={ownerStudio}
           setOwnerStudio={setOwnerStudio}
+          onProfileUpdate={handleProfileUpdate}
+          onUpsertStudio={handleUpsertStudio}
         />
       );
     case 'booking':

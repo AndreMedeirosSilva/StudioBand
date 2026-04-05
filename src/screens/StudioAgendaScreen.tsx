@@ -20,6 +20,7 @@ import { StudioLogoBanner, RoomPhotosStrip } from '../components/StudioMedia';
 import { COLORS } from '../theme';
 import { LoggedInUserBar } from '../components/LoggedInUserBar';
 import type { UserProfile } from '../navigation/AppNavigator';
+import { upsertManagedStudio } from '../registry/localRegistry';
 import {
   getTimelineSegmentsForDay,
   dayHasOccupiedSlots,
@@ -28,9 +29,17 @@ import {
   formatRoomCapacity,
   type OwnerStudioState,
   type BookingStudioRow,
+  type StudioRoom,
 } from '../data/studioCatalog';
 import { startOfDay, toDateKey, addDays, compareDateKeys } from '../lib/dates';
-import { timeOptionsStart, timeOptionsEndAfter, rangeOverlapsAny, rangeLabel } from '../lib/schedule';
+import {
+  timeOptionsStart,
+  timeOptionsEndAfter,
+  rangeOverlapsAny,
+  rangeLabel,
+  SCHEDULE_START_MIN,
+  SCHEDULE_END_MAX_MIN,
+} from '../lib/schedule';
 import type { MinuteRange } from '../lib/schedule';
 
 type Props = {
@@ -39,9 +48,19 @@ type Props = {
   onLogout: () => void;
   ownerStudio: OwnerStudioState;
   setOwnerStudio: Dispatch<SetStateAction<OwnerStudioState>>;
+  onProfileUpdate: (profile: UserProfile) => void;
+  onUpsertStudio: (input: { studioName: string; addressLine: string; photoUrl: string | null; rooms: StudioRoom[] }) => void;
 };
 
-export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, setOwnerStudio }: Props) {
+export function StudioAgendaScreen({
+  profile,
+  onBack,
+  onLogout,
+  ownerStudio,
+  setOwnerStudio,
+  onProfileUpdate,
+  onUpsertStudio,
+}: Props) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const pad = Math.min(24, Math.max(14, width * 0.05));
@@ -55,6 +74,7 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
   const [viewMonth, setViewMonth] = useState(() => today.getMonth());
   const [blockStart, setBlockStart] = useState(12 * 60);
   const [blockEnd, setBlockEnd] = useState(13 * 60 + 30);
+  const [showBlockPreview, setShowBlockPreview] = useState(false);
   const [roomId, setRoomId] = useState(() => ownerStudio.rooms[0]?.id ?? '');
   const [priceDraft, setPriceDraft] = useState('0');
   const [roomModalOpen, setRoomModalOpen] = useState(false);
@@ -63,6 +83,11 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
   const [roomCapacityDraft, setRoomCapacityDraft] = useState('8');
   const [roomPriceDraft, setRoomPriceDraft] = useState('90');
   const [roomPhotosDraft, setRoomPhotosDraft] = useState('');
+  const [studioModalOpen, setStudioModalOpen] = useState(false);
+  const [studioNameDraft, setStudioNameDraft] = useState(profile.studioName ?? '');
+  const [studioAddressDraft, setStudioAddressDraft] = useState(ownerStudio.addressLine ?? '');
+  const [studioPhotoDraft, setStudioPhotoDraft] = useState(ownerStudio.logoUri ?? '');
+  const [studioSaving, setStudioSaving] = useState(false);
 
   const dateKey = toDateKey(selectedDate);
 
@@ -105,7 +130,7 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
   }, [blockStart, blockEnd, blockEndOptions]);
 
   const blockPreview: MinuteRange | null =
-    blockEnd > blockStart ? { startMin: blockStart, endMin: blockEnd } : null;
+    showBlockPreview && blockEnd > blockStart ? { startMin: blockStart, endMin: blockEnd } : null;
 
   const busyForBlock = useMemo(
     () => (roomId ? getBusyRangesForDay(mineRow, roomId, dateKey, ownerStudio) : []),
@@ -125,12 +150,37 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
     return set;
   }, [mineRow, roomId, viewYear, viewMonth, ownerStudio, minDateKey, maxDateKey]);
 
+  const unavailableDateKeys = useMemo(() => {
+    const set = new Set<string>();
+    if (!roomId) return set;
+    const dim = new Date(viewYear, viewMonth + 1, 0).getDate();
+    for (let d = 1; d <= dim; d++) {
+      const dk = toDateKey(new Date(viewYear, viewMonth, d));
+      if (compareDateKeys(dk, minDateKey) < 0 || compareDateKeys(dk, maxDateKey) > 0) continue;
+      const dayBlocks = ownerStudio.blockedRangesByRoomDate[roomId]?.[dk] ?? [];
+      const isUnavailable = dayBlocks.some((r) => r.startMin <= SCHEDULE_START_MIN && r.endMin >= SCHEDULE_END_MAX_MIN);
+      if (isUnavailable) set.add(dk);
+    }
+    return set;
+  }, [roomId, viewYear, viewMonth, ownerStudio.blockedRangesByRoomDate, minDateKey, maxDateKey]);
+
   const bookingsToday = useMemo(
     () => ownerStudio.bookings.filter((b) => b.roomId === roomId && b.dateKey === dateKey),
     [ownerStudio.bookings, roomId, dateKey],
   );
 
   const blocksToday = roomId ? (ownerStudio.blockedRangesByRoomDate[roomId]?.[dateKey] ?? []) : [];
+  const isSelectedDayUnavailable = unavailableDateKeys.has(dateKey);
+
+  useEffect(() => {
+    setShowBlockPreview(false);
+  }, [roomId, dateKey]);
+
+  useEffect(() => {
+    setStudioNameDraft(profile.studioName ?? '');
+    setStudioAddressDraft(ownerStudio.addressLine ?? '');
+    setStudioPhotoDraft(ownerStudio.logoUri ?? '');
+  }, [profile.studioName, ownerStudio.addressLine, ownerStudio.logoUri]);
 
   const commitPrice = () => {
     const n = parseFloat(priceDraft.replace(',', '.'));
@@ -245,6 +295,49 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
     });
   };
 
+  const blockWholeDay = () => {
+    if (!roomId) return;
+    const fullDay: MinuteRange = { startMin: SCHEDULE_START_MIN, endMin: SCHEDULE_END_MAX_MIN };
+    const busyWithoutBlocks = bookingsToday.map((b) => ({ startMin: b.startMin, endMin: b.endMin }));
+    if (rangeOverlapsAny(fullDay, busyWithoutBlocks)) {
+      Alert.alert('Dia inteiro', 'Não é possível bloquear o dia inteiro porque já existe ensaio marcado neste dia.');
+      return;
+    }
+    setOwnerStudio((s) => {
+      const prevRoom = s.blockedRangesByRoomDate[roomId] ?? {};
+      return {
+        ...s,
+        blockedRangesByRoomDate: {
+          ...s.blockedRangesByRoomDate,
+          [roomId]: {
+            ...prevRoom,
+            [dateKey]: [fullDay],
+          },
+        },
+      };
+    });
+  };
+
+  const unblockWholeDay = () => {
+    if (!roomId) return;
+    setOwnerStudio((s) => {
+      const roomDays = s.blockedRangesByRoomDate[roomId] ?? {};
+      if (!roomDays[dateKey]) return s;
+      const nextRoomDays = { ...roomDays };
+      delete nextRoomDays[dateKey];
+      const nextByRoomDate = { ...s.blockedRangesByRoomDate };
+      if (Object.keys(nextRoomDays).length === 0) {
+        delete nextByRoomDate[roomId];
+      } else {
+        nextByRoomDate[roomId] = nextRoomDays;
+      }
+      return {
+        ...s,
+        blockedRangesByRoomDate: nextByRoomDate,
+      };
+    });
+  };
+
   const removeBlock = (r: MinuteRange) => {
     if (!roomId) return;
     setOwnerStudio((s) => ({
@@ -260,6 +353,54 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
       'Reserva',
       `${b.bandName}\n${rangeLabel({ startMin: b.startMin, endMin: b.endMin })}${cap}\n${b.status === 'pending' ? 'Pendente' : 'Confirmada'}`,
     );
+  };
+
+  const saveStudioProfile = () => {
+    if (!profile.userId) {
+      Alert.alert('Estúdio', 'Sessão inválida. Entre novamente.');
+      return;
+    }
+    const name = studioNameDraft.trim();
+    const address = studioAddressDraft.trim();
+    if (!name) {
+      Alert.alert('Estúdio', 'Informe o nome do estúdio.');
+      return;
+    }
+    if (!address) {
+      Alert.alert('Estúdio', 'Informe o endereço do estúdio.');
+      return;
+    }
+    const rawPhoto = studioPhotoDraft.trim();
+    const photoUrl = rawPhoto.length > 0 ? (/^https?:\/\//i.test(rawPhoto) ? rawPhoto : null) : null;
+    if (rawPhoto.length > 0 && !photoUrl) {
+      Alert.alert('Estúdio', 'A foto precisa ser um link começando com http:// ou https://.');
+      return;
+    }
+    setStudioSaving(true);
+    void (async () => {
+      try {
+        const res = await upsertManagedStudio(profile.userId, {
+          studioName: name,
+          addressLine: address,
+          photoUrl,
+        });
+        if (!res.ok) {
+          Alert.alert('Estúdio', res.message);
+          return;
+        }
+        onProfileUpdate(res.profile);
+        onUpsertStudio({
+          studioName: name,
+          addressLine: address,
+          photoUrl,
+          rooms: ownerStudio.rooms,
+        });
+        setStudioModalOpen(false);
+        Alert.alert('Estúdio', 'Dados do estúdio atualizados.');
+      } finally {
+        setStudioSaving(false);
+      }
+    })();
   };
 
   const selectedRoom = ownerStudio.rooms.find((r) => r.id === roomId);
@@ -298,6 +439,9 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
           <Text style={styles.sub}>
             Escolha a sala (capacidade em destaque; fotos abaixo). Reservas (verde) e bloqueios (vermelho) são por sala.
           </Text>
+          <Pressable onPress={() => setStudioModalOpen(true)} style={({ pressed }) => [styles.roomToolbarBtn, pressed && styles.pressed]} accessibilityRole="button">
+            <Text style={styles.roomToolbarBtnText}>Editar estúdio</Text>
+          </Pressable>
         </View>
 
         <Text style={[styles.section, { marginTop: 4, marginBottom: 8 }]}>Salas</Text>
@@ -388,16 +532,46 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
           minDateKey={minDateKey}
           maxDateKey={maxDateKey}
           markedDateKeys={markedDateKeys}
+          unavailableDateKeys={unavailableDateKeys}
           todayDateKey={toDateKey(today)}
           instructionText="Toque em um dia para ver a agenda desta data"
         />
+        {isSelectedDayUnavailable ? (
+          <View style={styles.unavailableBanner}>
+            <Text style={styles.unavailableBannerText}>Indisponível: este dia está bloqueado por inteiro.</Text>
+          </View>
+        ) : null}
 
         <Text style={[styles.section, styles.sectionSpaced]}>Linha do dia</Text>
         <DayTimeline segments={segments} previewRange={blockPreview} />
 
         <Text style={[styles.section, styles.sectionSpaced]}>Novo bloqueio (manutenção / indisponível)</Text>
-        <TimeChipsRow label="Começa às" options={timeOptionsStart()} value={blockStart} onChange={setBlockStart} />
-        <TimeChipsRow label="Termina às" options={blockEndOptions} value={blockEnd} onChange={setBlockEnd} />
+        <View style={styles.dayBlockActions}>
+          <Pressable onPress={blockWholeDay} style={({ pressed }) => [styles.roomToolbarBtnDanger, pressed && styles.pressed]} accessibilityRole="button">
+            <Text style={styles.roomToolbarBtnDangerText}>Bloquear dia inteiro</Text>
+          </Pressable>
+          <Pressable onPress={unblockWholeDay} style={({ pressed }) => [styles.roomToolbarBtn, pressed && styles.pressed]} accessibilityRole="button">
+            <Text style={styles.roomToolbarBtnText}>Desbloquear dia inteiro</Text>
+          </Pressable>
+        </View>
+        <TimeChipsRow
+          label="Começa às"
+          options={timeOptionsStart()}
+          value={blockStart}
+          onChange={(m) => {
+            setShowBlockPreview(true);
+            setBlockStart(m);
+          }}
+        />
+        <TimeChipsRow
+          label="Termina às"
+          options={blockEndOptions}
+          value={blockEnd}
+          onChange={(m) => {
+            setShowBlockPreview(true);
+            setBlockEnd(m);
+          }}
+        />
         {blockPreview ? (
           <View style={styles.blockValidation}>
             {blockOverlapsBusy ? (
@@ -493,6 +667,60 @@ export function StudioAgendaScreen({ profile, onBack, onLogout, ownerStudio, set
               </Pressable>
               <Pressable onPress={saveRoom} style={({ pressed }) => [styles.addBtn, pressed && styles.pressed]} accessibilityRole="button">
                 <Text style={styles.addBtnText}>Salvar sala</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={studioModalOpen} transparent animationType="fade" onRequestClose={() => !studioSaving && setStudioModalOpen(false)}>
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={() => !studioSaving && setStudioModalOpen(false)} accessibilityRole="button" />
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Editar estúdio</Text>
+            <Text style={styles.label}>Nome do estúdio</Text>
+            <TextInput
+              style={styles.priceInput}
+              value={studioNameDraft}
+              onChangeText={setStudioNameDraft}
+              placeholder="Ex.: Estúdio Central"
+              placeholderTextColor={COLORS.muted}
+              editable={!studioSaving}
+            />
+            <Text style={[styles.label, { marginTop: 10 }]}>Endereço</Text>
+            <TextInput
+              style={styles.priceInput}
+              value={studioAddressDraft}
+              onChangeText={setStudioAddressDraft}
+              placeholder="Endereço completo"
+              placeholderTextColor={COLORS.muted}
+              editable={!studioSaving}
+            />
+            <Text style={[styles.label, { marginTop: 10 }]}>Foto do estúdio (link)</Text>
+            <TextInput
+              style={styles.priceInput}
+              value={studioPhotoDraft}
+              onChangeText={setStudioPhotoDraft}
+              placeholder="https://..."
+              placeholderTextColor={COLORS.muted}
+              editable={!studioSaving}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={() => !studioSaving && setStudioModalOpen(false)}
+                style={({ pressed }) => [styles.roomToolbarBtn, pressed && styles.pressed]}
+                accessibilityRole="button"
+              >
+                <Text style={styles.roomToolbarBtnText}>Cancelar</Text>
+              </Pressable>
+              <Pressable
+                onPress={saveStudioProfile}
+                style={({ pressed }) => [styles.addBtn, studioSaving && styles.addBtnOff, pressed && !studioSaving && styles.pressed]}
+                disabled={studioSaving}
+                accessibilityRole="button"
+              >
+                <Text style={styles.addBtnText}>Salvar estúdio</Text>
               </Pressable>
             </View>
           </View>
@@ -617,6 +845,26 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
   sectionSpaced: { marginTop: 22, marginBottom: 10 },
+  unavailableBanner: {
+    marginTop: 10,
+    backgroundColor: 'rgba(255,122,155,0.16)',
+    borderColor: 'rgba(255,122,155,0.45)',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  unavailableBannerText: {
+    color: COLORS.danger,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  dayBlockActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 8,
+  },
   addBtn: {
     backgroundColor: COLORS.danger,
     borderRadius: 14,

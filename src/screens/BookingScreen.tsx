@@ -32,7 +32,7 @@ import {
   type OwnerStudioState,
 } from '../data/studioCatalog';
 import { startOfDay, toDateKey, addDays, compareDateKeys } from '../lib/dates';
-import { rangeLabel, SCHEDULE_END_MAX_MIN, SCHEDULE_STEP_MIN } from '../lib/schedule';
+import { rangeLabel } from '../lib/schedule';
 import type { MinuteRange } from '../lib/schedule';
 
 type Props = {
@@ -46,9 +46,6 @@ function formatDayLong(d: Date): string {
   const w = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
   return `${w[d.getDay()]}, ${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
 }
-
-const DEFAULT_START = 9 * 60;
-const DEFAULT_END = 10 * 60 + 30;
 
 type BookingStep = 'studio' | 'rooms' | 'schedule';
 
@@ -64,8 +61,7 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
   const [selectedDate, setSelectedDate] = useState(() => today);
   const [viewYear, setViewYear] = useState(() => today.getFullYear());
   const [viewMonth, setViewMonth] = useState(() => today.getMonth());
-  const [startMin, setStartMin] = useState(DEFAULT_START);
-  const [endMin, setEndMin] = useState(DEFAULT_END);
+  const [draftRange, setDraftRange] = useState<MinuteRange | null>(null);
   const [bookingModalVisible, setBookingModalVisible] = useState(false);
   const [timelineDragActive, setTimelineDragActive] = useState(false);
   const [scheduleDetailsOpen, setScheduleDetailsOpen] = useState(false);
@@ -120,11 +116,10 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
     return set;
   }, [studio, roomId, viewYear, viewMonth, ownerStudio, minDateKey, maxDateKey]);
 
-  const previewRange: MinuteRange | null =
-    endMin > startMin ? { startMin, endMin } : null;
+  const previewRange = draftRange;
   const available =
     studio && roomId && previewRange
-      ? isRangeAvailable(studio, roomId, dateKey, ownerStudio, startMin, endMin)
+      ? isRangeAvailable(studio, roomId, dateKey, ownerStudio, previewRange.startMin, previewRange.endMin)
       : false;
 
   const openCadastroForDay = (d: Date) => {
@@ -133,9 +128,8 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
     setSelectedDate(x);
     setViewYear(x.getFullYear());
     setViewMonth(x.getMonth());
+    setDraftRange(null);
     if (lastCadastroDateKeyRef.current !== key) {
-      setStartMin(DEFAULT_START);
-      setEndMin(DEFAULT_END);
       setNotes('');
       lastCadastroDateKeyRef.current = key;
     }
@@ -148,18 +142,12 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
   };
 
   const applyRangeFromDrag = useCallback((r: MinuteRange) => {
-    let s = r.startMin;
-    let e = r.endMin;
-    if (e <= s) {
-      e = Math.min(s + SCHEDULE_STEP_MIN, SCHEDULE_END_MAX_MIN);
-    }
-    setStartMin(s);
-    setEndMin(e);
+    setDraftRange(r.endMin > r.startMin ? r : null);
   }, []);
 
   const confirm = () => {
     if (!studio || !previewRange || !available || !selectedRoom) return;
-    const cents = estimatedPriceCents(price, startMin, endMin);
+    const cents = estimatedPriceCents(price, previewRange.startMin, previewRange.endMin);
     const reais = (cents / 100).toFixed(2);
     const noteLine = notes.trim() ? `\nNotas: ${notes.trim()}` : '';
     Alert.alert(
@@ -475,7 +463,7 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
                   <Text style={styles.validationRange}>{rangeLabel(previewRange)}</Text>
                   {price > 0 ? (
                     <Text style={styles.validationPrice}>
-                      Estimativa: R$ {(estimatedPriceCents(price, startMin, endMin) / 100).toFixed(2)}
+                      Estimativa: R$ {(estimatedPriceCents(price, previewRange.startMin, previewRange.endMin) / 100).toFixed(2)}
                     </Text>
                   ) : null}
                   {!available ? (
