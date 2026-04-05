@@ -4,6 +4,11 @@ import { buildInviteUrl, parseInviteToken } from '../lib/inviteLink';
 import { isInsecureLocalAuthAllowed, isSupabaseConfigured } from '../lib/supabase/config';
 import { getPasswordPolicyError, isValidEmail, normalizeEmail } from '../lib/auth/credentialsPolicy';
 import {
+  getManagedStudioInviteTokenRemote,
+  joinStudioWithInviteRemote,
+  peekInviteStudioNameRemote,
+  regenerateManagedStudioInviteRemote,
+  upsertManagedStudioRemote,
   createOwnedBandRemote,
   deleteOwnedBandRemote,
   getInviteUrlForOwnedBandRemote,
@@ -681,4 +686,50 @@ export async function leaveBand(userId: string, bandId: string): Promise<JoinBan
   if (r.memberships.length === before) return { ok: false, message: 'Você não faz parte desta banda.' };
   await saveRegistry(r);
   return { ok: true, profile: buildProfileFromRegistry(r, user) };
+}
+
+export async function upsertManagedStudio(
+  userId: string,
+  input: { studioName: string; addressLine: string; photoUrl: string | null },
+): Promise<JoinBandResult> {
+  if (isSupabaseConfigured()) {
+    return upsertManagedStudioRemote(input);
+  }
+  const r = await loadRegistry();
+  const user = r.users.find((u) => u.id === userId);
+  if (!user) return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  user.studioName = input.studioName.trim() || null;
+  user.ownerStudioId = user.ownerStudioId ?? `studio_${randomSuffix()}`;
+  await saveRegistry(r);
+  return { ok: true, profile: buildProfileFromRegistry(r, user) };
+}
+
+export async function joinStudioWithInvite(userId: string, inviteToken: string): Promise<JoinBandResult> {
+  if (isSupabaseConfigured()) {
+    return joinStudioWithInviteRemote(userId, inviteToken);
+  }
+  return { ok: false, message: 'Convite de estúdio requer Supabase configurado neste ambiente.' };
+}
+
+export async function peekInviteStudioName(token: string): Promise<string | null> {
+  if (isSupabaseConfigured()) {
+    return peekInviteStudioNameRemote(token);
+  }
+  return null;
+}
+
+export async function getManagedStudioInviteToken(userId: string): Promise<string | null> {
+  if (isSupabaseConfigured()) {
+    return getManagedStudioInviteTokenRemote(userId);
+  }
+  return null;
+}
+
+export async function regenerateManagedStudioInvite(
+  userId: string,
+): Promise<{ ok: true; inviteToken: string } | { ok: false; message: string }> {
+  if (isSupabaseConfigured()) {
+    return regenerateManagedStudioInviteRemote(userId);
+  }
+  return { ok: false, message: 'Convite de estúdio requer Supabase configurado neste ambiente.' };
 }

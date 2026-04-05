@@ -25,9 +25,12 @@ import type { OwnerStudioState } from '../data/studioCatalog';
 import {
   createOwnedBand,
   deleteOwnedBand,
+  getManagedStudioInviteToken,
+  joinStudioWithInvite,
   joinBandWithInvite,
   leaveBand,
   demoteBandAdminForOwner,
+  peekInviteStudioName,
   listBandMembersForOwner,
   listBandsDetailForUser,
   listOwnedBandsForUser,
@@ -35,7 +38,9 @@ import {
   promoteBandMemberForOwner,
   regenerateOwnedBandInvite,
   removeBandMemberForOwner,
+  regenerateManagedStudioInvite,
   renameOwnedBand,
+  upsertManagedStudio,
   updateOwnedBandPhoto,
 } from '../registry/localRegistry';
 
@@ -106,6 +111,10 @@ export function HomeScreen({
   const [studioNameDraft, setStudioNameDraft] = useState('');
   const [studioAddressDraft, setStudioAddressDraft] = useState('');
   const [studioPhotoDraft, setStudioPhotoDraft] = useState('');
+  const [studioInviteToken, setStudioInviteToken] = useState<string | null>(null);
+  const [studioJoinCode, setStudioJoinCode] = useState('');
+  const [studioJoinPreview, setStudioJoinPreview] = useState<string | null>(null);
+  const [studioInviteBusy, setStudioInviteBusy] = useState(false);
 
   useEffect(() => {
     if (!profile.userId) {
@@ -167,6 +176,26 @@ export function HomeScreen({
     setStudioPhotoDraft(ownerStudio.logoUri ?? '');
   }, [profile.studioName, ownerStudio.addressLine, ownerStudio.logoUri]);
 
+  useEffect(() => {
+    if (!profile.userId || !profile.studioName) {
+      setStudioInviteToken(null);
+      return;
+    }
+    void getManagedStudioInviteToken(profile.userId).then(setStudioInviteToken);
+  }, [profile.userId, profile.studioName]);
+
+  useEffect(() => {
+    const t = studioJoinCode.trim();
+    if (!t) {
+      setStudioJoinPreview(null);
+      return;
+    }
+    const id = setTimeout(() => {
+      void peekInviteStudioName(t).then(setStudioJoinPreview);
+    }, 350);
+    return () => clearTimeout(id);
+  }, [studioJoinCode]);
+
   const refreshBandData = useCallback(async () => {
     if (!profile.userId) return;
     const [rows, owned] = await Promise.all([listBandsDetailForUser(profile.userId), listOwnedBandsForUser(profile.userId)]);
@@ -201,6 +230,10 @@ export function HomeScreen({
   );
 
   const submitStudioProfile = useCallback(() => {
+    if (!profile.userId) {
+      Alert.alert('Estúdio', 'Sessão inválida. Entre de novo.');
+      return;
+    }
     const name = studioNameDraft.trim();
     const address = studioAddressDraft.trim();
     if (!name) {
@@ -217,10 +250,99 @@ export function HomeScreen({
       Alert.alert('Estúdio', 'A foto precisa ser um link começando com http:// ou https://.');
       return;
     }
-    onUpsertStudio({ studioName: name, addressLine: address, photoUrl: normalizedPhoto });
-    setStudioFormOpen(false);
-    Alert.alert('Estúdio salvo', 'Cadastro do estúdio atualizado com sucesso.');
-  }, [onUpsertStudio, studioAddressDraft, studioNameDraft, studioPhotoDraft]);
+    setStudioInviteBusy(true);
+    void (async () => {
+      try {
+        const res = await upsertManagedStudio(profile.userId, {
+          studioName: name,
+          addressLine: address,
+          photoUrl: normalizedPhoto,
+        });
+        if (!res.ok) {
+          Alert.alert('Estúdio', res.message);
+          return;
+        }
+        onProfileUpdate(res.profile);
+        onUpsertStudio({ studioName: name, addressLine: address, photoUrl: normalizedPhoto });
+        setStudioFormOpen(false);
+        const token = await getManagedStudioInviteToken(profile.userId);
+        setStudioInviteToken(token);
+        Alert.alert('Estúdio salvo', token ? `Cadastro atualizado.\n\nCódigo do estúdio:\n${token}` : 'Cadastro atualizado com sucesso.');
+      } finally {
+        setStudioInviteBusy(false);
+      }
+    })();
+  }, [onProfileUpdate, onUpsertStudio, profile.userId, studioAddressDraft, studioNameDraft, studioPhotoDraft]);
+
+  const copyStudioInviteCode = useCallback(async () => {
+    if (!studioInviteToken) return;
+    const ok = await copyTextToClipboard(studioInviteToken);
+    Alert.alert(ok ? 'Copiado' : 'Convite', ok ? 'Código do estúdio copiado.' : 'Não consegui copiar agora.');
+  }, [studioInviteToken]);
+
+  const copyStudioInviteLink = useCallback(async () => {
+    if (!studioInviteToken) return;
+    const ok = await copyTextToClipboard(buildInviteUrl(studioInviteToken));
+    Alert.alert(ok ? 'Copiado' : 'Convite', ok ? 'Link do estúdio copiado.' : 'Não consegui copiar agora.');
+  }, [studioInviteToken]);
+
+  const shareStudioInvite = useCallback(async () => {
+    if (!studioInviteToken) return;
+    const url = buildInviteUrl(studioInviteToken);
+    try {
+      await Share.share({
+        title: 'Convite de estúdio',
+        message: `Entre na administração do meu estúdio no Estudio Banda: ${url}`,
+      });
+    } catch {
+      Alert.alert('Convite', 'Não consegui abrir o compartilhamento agora.');
+    }
+  }, [studioInviteToken]);
+
+  const applyJoinStudio = useCallback(() => {
+    const code = studioJoinCode.trim();
+    if (!code) {
+      Alert.alert('Estúdio', 'Cole o código de convite do estúdio.');
+      return;
+    }
+    if (!profile.userId) return;
+    setStudioInviteBusy(true);
+    void (async () => {
+      try {
+        const res = await joinStudioWithInvite(profile.userId, code);
+        if (!res.ok) {
+          Alert.alert('Estúdio', res.message);
+          return;
+        }
+        onProfileUpdate(res.profile);
+        const token = await getManagedStudioInviteToken(profile.userId);
+        setStudioInviteToken(token);
+        setStudioJoinCode('');
+        setStudioJoinPreview(null);
+        Alert.alert('Pronto', 'Você agora é administrador do estúdio.');
+      } finally {
+        setStudioInviteBusy(false);
+      }
+    })();
+  }, [onProfileUpdate, profile.userId, studioJoinCode]);
+
+  const applyRegenerateStudioInvite = useCallback(() => {
+    if (!profile.userId) return;
+    setStudioInviteBusy(true);
+    void (async () => {
+      try {
+        const res = await regenerateManagedStudioInvite(profile.userId);
+        if (!res.ok) {
+          Alert.alert('Estúdio', res.message);
+          return;
+        }
+        setStudioInviteToken(res.inviteToken);
+        Alert.alert('Convite atualizado', 'Novo código de convite do estúdio gerado.');
+      } finally {
+        setStudioInviteBusy(false);
+      }
+    })();
+  }, [profile.userId]);
 
   const toggleBandMembers = useCallback(
     async (bandId: string) => {
@@ -1164,10 +1286,56 @@ export function HomeScreen({
               />
               <Pressable
                 onPress={submitStudioProfile}
-                style={({ pressed }) => [styles.registerBandBtn, pressed && styles.pressed]}
+                style={({ pressed }) => [styles.registerBandBtn, (studioInviteBusy || pressed) && styles.pressed]}
+                disabled={studioInviteBusy}
                 accessibilityRole="button"
               >
                 <Text style={styles.registerBandBtnText}>Salvar estúdio</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {profile.studioName ? (
+            <View style={styles.studioFormWrap}>
+              <Text style={styles.modalFieldLabel}>Convite do estúdio</Text>
+              {studioInviteToken ? (
+                <View style={styles.inviteTokenBlock}>
+                  <Text selectable style={styles.inviteTokenValue}>{studioInviteToken}</Text>
+                </View>
+              ) : (
+                <Text style={styles.joinPreviewMuted}>Sem código disponível no momento.</Text>
+              )}
+              <View style={styles.inviteActions}>
+                <Pressable onPress={() => void copyStudioInviteCode()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
+                  <Text style={styles.inviteBtnSecondaryText}>Copiar código</Text>
+                </Pressable>
+                <Pressable onPress={() => void copyStudioInviteLink()} style={({ pressed }) => [styles.inviteBtn, pressed && styles.pressed]} accessibilityRole="button">
+                  <Text style={styles.inviteBtnText}>Copiar link</Text>
+                </Pressable>
+                <Pressable onPress={() => void shareStudioInvite()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
+                  <Text style={styles.inviteBtnSecondaryText}>Compartilhar</Text>
+                </Pressable>
+                <Pressable onPress={() => void applyRegenerateStudioInvite()} style={({ pressed }) => [styles.inviteBtnSecondary, pressed && styles.pressed]} accessibilityRole="button">
+                  <Text style={styles.inviteBtnSecondaryText}>Novo código</Text>
+                </Pressable>
+              </View>
+              <Text style={[styles.modalFieldLabel, { marginTop: 12 }]}>Entrar em estúdio por convite</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="Cole código ou link de convite"
+                placeholderTextColor={COLORS.muted}
+                value={studioJoinCode}
+                onChangeText={setStudioJoinCode}
+              />
+              {studioJoinCode.trim().length > 0 ? (
+                <Text style={styles.joinPreviewMuted}>{studioJoinPreview ? `Estúdio encontrado: ${studioJoinPreview}` : 'Verificando código...'}</Text>
+              ) : null}
+              <Pressable
+                onPress={() => void applyJoinStudio()}
+                style={({ pressed }) => [styles.joinBtn, (studioInviteBusy || pressed) && styles.pressed]}
+                disabled={studioInviteBusy}
+                accessibilityRole="button"
+              >
+                <Text style={styles.joinBtnText}>Entrar como administrador</Text>
               </Pressable>
             </View>
           ) : null}
