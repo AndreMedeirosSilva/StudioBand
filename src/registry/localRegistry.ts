@@ -8,6 +8,7 @@ import {
   deleteManagedStudioRemote,
   getManagedStudioInviteTokenRemote,
   joinStudioWithInviteRemote,
+  listStudiosForBookingCatalogRemote,
   listOwnedStudiosForUserRemote,
   peekInviteStudioNameRemote,
   regenerateManagedStudioInviteRemote,
@@ -46,6 +47,13 @@ export type OwnedStudioSummary = {
   id: string;
   name: string;
   inviteToken: string | null;
+  photoUrl: string | null;
+};
+
+export type BookingStudioCatalogSummary = {
+  id: string;
+  name: string;
+  addressLine: string | null;
   photoUrl: string | null;
 };
 
@@ -750,6 +758,23 @@ export async function listOwnedStudiosForUser(userId: string): Promise<OwnedStud
   ];
 }
 
+export async function listStudiosForBookingCatalog(userId: string): Promise<BookingStudioCatalogSummary[]> {
+  if (isSupabaseConfigured()) {
+    return listStudiosForBookingCatalogRemote(userId);
+  }
+  const r = await loadRegistry();
+  const rows = r.users
+    .filter((u) => u.ownerStudioId && u.studioName)
+    .map((u) => ({
+      id: u.ownerStudioId as string,
+      name: (u.studioName as string).trim(),
+      addressLine: null,
+      photoUrl: null,
+    }))
+    .filter((row) => row.name.length > 0);
+  return [...new Map(rows.map((row) => [row.id, row])).values()];
+}
+
 export async function joinStudioWithInvite(userId: string, inviteToken: string): Promise<JoinBandResult> {
   if (isSupabaseConfigured()) {
     return joinStudioWithInviteRemote(userId, inviteToken);
@@ -773,20 +798,31 @@ export async function getManagedStudioInviteToken(userId: string): Promise<strin
 
 export async function regenerateManagedStudioInvite(
   userId: string,
+  studioId?: string,
 ): Promise<{ ok: true; inviteToken: string } | { ok: false; message: string }> {
   if (isSupabaseConfigured()) {
-    return regenerateManagedStudioInviteRemote(userId);
+    return regenerateManagedStudioInviteRemote(userId, studioId);
+  }
+  if (studioId) {
+    const r = await loadRegistry();
+    const user = r.users.find((u) => u.id === userId);
+    if (!user || user.ownerStudioId !== studioId) {
+      return { ok: false, message: 'Somente administradores podem gerar código deste estúdio.' };
+    }
   }
   return { ok: false, message: 'Convite de estúdio requer Supabase configurado neste ambiente.' };
 }
 
-export async function deleteManagedStudio(userId: string): Promise<JoinBandResult> {
+export async function deleteManagedStudio(userId: string, studioId?: string): Promise<JoinBandResult> {
   if (isSupabaseConfigured()) {
-    return deleteManagedStudioRemote(userId);
+    return deleteManagedStudioRemote(userId, studioId);
   }
   const r = await loadRegistry();
   const user = r.users.find((u) => u.id === userId);
   if (!user) return { ok: false, message: 'Sessão inválida. Entre de novo.' };
+  if (studioId && user.ownerStudioId !== studioId) {
+    return { ok: false, message: 'Somente administradores podem excluir este estúdio.' };
+  }
   user.studioName = null;
   user.ownerStudioId = null;
   await saveRegistry(r);

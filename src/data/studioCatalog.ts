@@ -271,21 +271,29 @@ export type BookingStudioRow = {
   logoUri: string | null;
 };
 
+export type BookingCatalogStudio = {
+  id: string;
+  name: string;
+  addressLine: string | null;
+  photoUrl: string | null;
+};
+
 export function listStudiosForBooking(
   profile: { ownerStudioId: string | null; studioName: string | null },
   owner: OwnerStudioState,
+  catalog: BookingCatalogStudio[] = [],
 ): BookingStudioRow[] {
-  const rows: BookingStudioRow[] = PUBLIC_CATALOG_STUDIOS.map((s) => ({
+  const rows: BookingStudioRow[] = catalog.map((s) => ({
     id: s.id,
     name: s.name,
-    city: s.city,
-    addressLine: s.city,
-    pricePerHour: s.pricePerHour,
+    city: s.addressLine || 'Estúdio',
+    addressLine: s.addressLine,
+    pricePerHour: owner.pricePerHour,
     isMine: false,
-    logoUri: s.logoUri,
+    logoUri: s.photoUrl,
   }));
   if (profile.ownerStudioId && profile.studioName && owner.rooms.length > 0) {
-    rows.unshift({
+    const mine = {
       id: profile.ownerStudioId,
       name: profile.studioName,
       city: owner.addressLine || 'Meu estúdio',
@@ -293,7 +301,9 @@ export function listStudiosForBooking(
       pricePerHour: owner.rooms[0]?.pricePerHour ?? owner.pricePerHour,
       isMine: true,
       logoUri: owner.logoUri,
-    });
+    };
+    const withoutMine = rows.filter((row) => row.id !== mine.id);
+    return [mine, ...withoutMine];
   }
   return rows;
 }
@@ -304,8 +314,7 @@ export function getRoomsForStudioRow(row: BookingStudioRow, owner: OwnerStudioSt
     if (owner.rooms.length > 0) return owner.rooms;
     return [{ id: `${row.id}-sala`, name: 'Sala principal', pricePerHour: owner.pricePerHour, capacityPeople: 8 }];
   }
-  const cat = PUBLIC_CATALOG_STUDIOS.find((s) => s.id === row.id);
-  return cat?.rooms ?? [{ id: `${row.id}-sala`, name: 'Sala 1', pricePerHour: row.pricePerHour, capacityPeople: 6 }];
+  return [{ id: `${row.id}-sala-principal`, name: 'Sala principal', pricePerHour: row.pricePerHour, capacityPeople: 8 }];
 }
 
 function strHash(s: string): number {
@@ -367,7 +376,7 @@ export function getBusyRangesForDay(
     const blocked = owner.blockedRangesByRoomDate[roomId]?.[dateKey] ?? [];
     return [...fromBookings, ...blocked];
   }
-  return getPublicDemoBusyRanges(row.id, roomId, dateKey);
+  return [];
 }
 
 export type TimelineSegment = {
@@ -397,10 +406,6 @@ export function getTimelineSegmentsForDay(
       });
     (owner.blockedRangesByRoomDate[roomId]?.[dateKey] ?? []).forEach((r) => {
       out.push({ kind: 'blocked', startMin: r.startMin, endMin: r.endMin, label: 'Bloqueado' });
-    });
-  } else {
-    getPublicDemoBusyRanges(row.id, roomId, dateKey).forEach((r) => {
-      out.push({ kind: 'booked', startMin: r.startMin, endMin: r.endMin, label: 'Reservado' });
     });
   }
   return out.sort((a, b) => a.startMin - b.startMin);

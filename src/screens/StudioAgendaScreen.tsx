@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   View,
   Text,
@@ -22,11 +23,13 @@ import { LoggedInUserBar } from '../components/LoggedInUserBar';
 import type { UserProfile } from '../navigation/AppNavigator';
 import { upsertManagedStudio } from '../registry/localRegistry';
 import {
+  emptyOwnerStudioState,
   getTimelineSegmentsForDay,
   dayHasOccupiedSlots,
   getBusyRangesForDay,
   removeBlockedRange,
   formatRoomCapacity,
+  normalizeOwnerStudioState,
   type OwnerStudioState,
   type BookingStudioRow,
   type StudioRoom,
@@ -50,6 +53,8 @@ type Props = {
   setOwnerStudio: Dispatch<SetStateAction<OwnerStudioState>>;
   onProfileUpdate: (profile: UserProfile) => void;
   onUpsertStudio: (input: { studioName: string; addressLine: string; photoUrl: string | null; rooms: StudioRoom[] }) => void;
+  selectedStudioId?: string;
+  selectedStudioName?: string;
 };
 
 export function StudioAgendaScreen({
@@ -60,6 +65,8 @@ export function StudioAgendaScreen({
   setOwnerStudio,
   onProfileUpdate,
   onUpsertStudio,
+  selectedStudioId,
+  selectedStudioName,
 }: Props) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -70,12 +77,16 @@ export function StudioAgendaScreen({
   const maxDateKey = useMemo(() => toDateKey(addDays(today, 90)), [today]);
 
   const [selectedDate, setSelectedDate] = useState(() => today);
+  const activeStudioId = selectedStudioId ?? profile.ownerStudioId ?? 'local-studio';
+  const isPrimaryStudio = !!profile.ownerStudioId && activeStudioId === profile.ownerStudioId;
+  const activeStudioName = selectedStudioName?.trim() || profile.studioName || 'Seu estúdio';
+  const [studioState, setStudioState] = useState<OwnerStudioState>(() => normalizeOwnerStudioState(ownerStudio));
   const [viewYear, setViewYear] = useState(() => today.getFullYear());
   const [viewMonth, setViewMonth] = useState(() => today.getMonth());
   const [blockStart, setBlockStart] = useState(12 * 60);
   const [blockEnd, setBlockEnd] = useState(13 * 60 + 30);
   const [showBlockPreview, setShowBlockPreview] = useState(false);
-  const [roomId, setRoomId] = useState(() => ownerStudio.rooms[0]?.id ?? '');
+  const [roomId, setRoomId] = useState(() => studioState.rooms[0]?.id ?? '');
   const [priceDraft, setPriceDraft] = useState('0');
   const [roomModalOpen, setRoomModalOpen] = useState(false);
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
@@ -85,40 +96,74 @@ export function StudioAgendaScreen({
   const [roomPhotosDraft, setRoomPhotosDraft] = useState('');
   const [studioModalOpen, setStudioModalOpen] = useState(false);
   const [studioNameDraft, setStudioNameDraft] = useState(profile.studioName ?? '');
-  const [studioAddressDraft, setStudioAddressDraft] = useState(ownerStudio.addressLine ?? '');
-  const [studioPhotoDraft, setStudioPhotoDraft] = useState(ownerStudio.logoUri ?? '');
+  const [studioAddressDraft, setStudioAddressDraft] = useState(studioState.addressLine ?? '');
+  const [studioPhotoDraft, setStudioPhotoDraft] = useState(studioState.logoUri ?? '');
   const [studioSaving, setStudioSaving] = useState(false);
+
+  useEffect(() => {
+    if (isPrimaryStudio) {
+      setStudioState(normalizeOwnerStudioState(ownerStudio));
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const key = `@estudiobanda/studio_state/v1/${profile.userId}/${activeStudioId}`;
+        const raw = await AsyncStorage.getItem(key);
+        if (cancelled) return;
+        if (!raw) {
+          setStudioState(emptyOwnerStudioState());
+          return;
+        }
+        const parsed = JSON.parse(raw) as OwnerStudioState;
+        setStudioState(normalizeOwnerStudioState(parsed));
+      } catch {
+        if (!cancelled) setStudioState(emptyOwnerStudioState());
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeStudioId, isPrimaryStudio, ownerStudio, profile.userId]);
+
+  useEffect(() => {
+    if (isPrimaryStudio) return;
+    void AsyncStorage.setItem(
+      `@estudiobanda/studio_state/v1/${profile.userId}/${activeStudioId}`,
+      JSON.stringify(studioState),
+    );
+  }, [activeStudioId, isPrimaryStudio, profile.userId, studioState]);
 
   const dateKey = toDateKey(selectedDate);
 
   const mineRow = useMemo<BookingStudioRow>(
     () => ({
-      id: profile.ownerStudioId ?? 'local-studio',
-      name: profile.studioName ?? '',
+      id: activeStudioId,
+      name: activeStudioName,
       city: '',
-      addressLine: ownerStudio.addressLine ?? '',
-      pricePerHour: ownerStudio.rooms.find((r) => r.id === roomId)?.pricePerHour ?? ownerStudio.pricePerHour,
+      addressLine: studioState.addressLine ?? '',
+      pricePerHour: studioState.rooms.find((r) => r.id === roomId)?.pricePerHour ?? studioState.pricePerHour,
       isMine: true,
-      logoUri: ownerStudio.logoUri,
+      logoUri: studioState.logoUri,
     }),
-    [profile.ownerStudioId, profile.studioName, ownerStudio.addressLine, ownerStudio.logoUri, ownerStudio.pricePerHour, ownerStudio.rooms, roomId],
+    [activeStudioId, activeStudioName, roomId, studioState.addressLine, studioState.logoUri, studioState.pricePerHour, studioState.rooms],
   );
 
   useEffect(() => {
-    const selected = ownerStudio.rooms.find((r) => r.id === roomId);
-    setPriceDraft(String(selected?.pricePerHour ?? ownerStudio.pricePerHour));
-  }, [ownerStudio.pricePerHour, ownerStudio.rooms, profile.ownerStudioId, roomId]);
+    const selected = studioState.rooms.find((r) => r.id === roomId);
+    setPriceDraft(String(selected?.pricePerHour ?? studioState.pricePerHour));
+  }, [profile.ownerStudioId, roomId, studioState.pricePerHour, studioState.rooms]);
 
   useEffect(() => {
-    const ids = ownerStudio.rooms.map((r) => r.id);
+    const ids = studioState.rooms.map((r) => r.id);
     if (!ids.includes(roomId)) {
       setRoomId(ids[0] ?? '');
     }
-  }, [ownerStudio.rooms, roomId]);
+  }, [roomId, studioState.rooms]);
 
   const segments = useMemo(
-    () => (roomId ? getTimelineSegmentsForDay(mineRow, roomId, dateKey, ownerStudio) : []),
-    [mineRow, roomId, dateKey, ownerStudio],
+    () => (roomId ? getTimelineSegmentsForDay(mineRow, roomId, dateKey, studioState) : []),
+    [mineRow, roomId, dateKey, studioState],
   );
 
   const blockEndOptions = useMemo(() => timeOptionsEndAfter(blockStart), [blockStart]);
@@ -133,8 +178,8 @@ export function StudioAgendaScreen({
     showBlockPreview && blockEnd > blockStart ? { startMin: blockStart, endMin: blockEnd } : null;
 
   const busyForBlock = useMemo(
-    () => (roomId ? getBusyRangesForDay(mineRow, roomId, dateKey, ownerStudio) : []),
-    [mineRow, roomId, dateKey, ownerStudio],
+    () => (roomId ? getBusyRangesForDay(mineRow, roomId, dateKey, studioState) : []),
+    [mineRow, roomId, dateKey, studioState],
   );
   const blockOverlapsBusy =
     blockPreview !== null && rangeOverlapsAny(blockPreview, busyForBlock);
@@ -145,10 +190,10 @@ export function StudioAgendaScreen({
     for (let d = 1; d <= dim; d++) {
       const dk = toDateKey(new Date(viewYear, viewMonth, d));
       if (compareDateKeys(dk, minDateKey) < 0 || compareDateKeys(dk, maxDateKey) > 0) continue;
-      if (roomId && dayHasOccupiedSlots(mineRow, roomId, dk, ownerStudio)) set.add(dk);
+      if (roomId && dayHasOccupiedSlots(mineRow, roomId, dk, studioState)) set.add(dk);
     }
     return set;
-  }, [mineRow, roomId, viewYear, viewMonth, ownerStudio, minDateKey, maxDateKey]);
+  }, [mineRow, roomId, viewYear, viewMonth, studioState, minDateKey, maxDateKey]);
 
   const unavailableDateKeys = useMemo(() => {
     const set = new Set<string>();
@@ -157,19 +202,19 @@ export function StudioAgendaScreen({
     for (let d = 1; d <= dim; d++) {
       const dk = toDateKey(new Date(viewYear, viewMonth, d));
       if (compareDateKeys(dk, minDateKey) < 0 || compareDateKeys(dk, maxDateKey) > 0) continue;
-      const dayBlocks = ownerStudio.blockedRangesByRoomDate[roomId]?.[dk] ?? [];
+      const dayBlocks = studioState.blockedRangesByRoomDate[roomId]?.[dk] ?? [];
       const isUnavailable = dayBlocks.some((r) => r.startMin <= SCHEDULE_START_MIN && r.endMin >= SCHEDULE_END_MAX_MIN);
       if (isUnavailable) set.add(dk);
     }
     return set;
-  }, [roomId, viewYear, viewMonth, ownerStudio.blockedRangesByRoomDate, minDateKey, maxDateKey]);
+  }, [roomId, viewYear, viewMonth, studioState.blockedRangesByRoomDate, minDateKey, maxDateKey]);
 
   const bookingsToday = useMemo(
-    () => ownerStudio.bookings.filter((b) => b.roomId === roomId && b.dateKey === dateKey),
-    [ownerStudio.bookings, roomId, dateKey],
+    () => studioState.bookings.filter((b) => b.roomId === roomId && b.dateKey === dateKey),
+    [studioState.bookings, roomId, dateKey],
   );
 
-  const blocksToday = roomId ? (ownerStudio.blockedRangesByRoomDate[roomId]?.[dateKey] ?? []) : [];
+  const blocksToday = roomId ? (studioState.blockedRangesByRoomDate[roomId]?.[dateKey] ?? []) : [];
   const isSelectedDayUnavailable = unavailableDateKeys.has(dateKey);
 
   useEffect(() => {
@@ -177,22 +222,28 @@ export function StudioAgendaScreen({
   }, [roomId, dateKey]);
 
   useEffect(() => {
-    setStudioNameDraft(profile.studioName ?? '');
-    setStudioAddressDraft(ownerStudio.addressLine ?? '');
-    setStudioPhotoDraft(ownerStudio.logoUri ?? '');
-  }, [profile.studioName, ownerStudio.addressLine, ownerStudio.logoUri]);
+    setStudioNameDraft(activeStudioName);
+    setStudioAddressDraft(studioState.addressLine ?? '');
+    setStudioPhotoDraft(studioState.logoUri ?? '');
+  }, [activeStudioName, studioState.addressLine, studioState.logoUri]);
 
   const commitPrice = () => {
     const n = parseFloat(priceDraft.replace(',', '.'));
     if (!roomId) return;
     if (Number.isFinite(n) && n >= 0) {
-      setOwnerStudio((s) => ({
+      setStudioState((s) => ({
         ...s,
         rooms: s.rooms.map((room) => (room.id === roomId ? { ...room, pricePerHour: n } : room)),
       }));
+      if (isPrimaryStudio) {
+        setOwnerStudio((s) => ({
+          ...s,
+          rooms: s.rooms.map((room) => (room.id === roomId ? { ...room, pricePerHour: n } : room)),
+        }));
+      }
     } else {
-      const selected = ownerStudio.rooms.find((r) => r.id === roomId);
-      setPriceDraft(String(selected?.pricePerHour ?? ownerStudio.pricePerHour));
+      const selected = studioState.rooms.find((r) => r.id === roomId);
+      setPriceDraft(String(selected?.pricePerHour ?? studioState.pricePerHour));
     }
   };
 
@@ -200,13 +251,13 @@ export function StudioAgendaScreen({
     setEditingRoomId(null);
     setRoomNameDraft('');
     setRoomCapacityDraft('8');
-    setRoomPriceDraft(String(ownerStudio.pricePerHour || 90));
+    setRoomPriceDraft(String(studioState.pricePerHour || 90));
     setRoomPhotosDraft('');
     setRoomModalOpen(true);
   };
 
   const openEditRoom = () => {
-    const current = ownerStudio.rooms.find((r) => r.id === roomId);
+    const current = studioState.rooms.find((r) => r.id === roomId);
     if (!current) return;
     setEditingRoomId(current.id);
     setRoomNameDraft(current.name);
@@ -237,7 +288,7 @@ export function StudioAgendaScreen({
       .map((x) => x.trim())
       .filter((x) => /^https?:\/\//i.test(x));
     const nextId = editingRoomId ? null : `${profile.ownerStudioId ?? 'studio'}-room-${Date.now().toString(36)}`;
-    setOwnerStudio((s) => {
+    setStudioState((s) => {
       if (editingRoomId) {
         return {
           ...s,
@@ -251,6 +302,22 @@ export function StudioAgendaScreen({
         rooms: [...s.rooms, { id: nextId as string, name, capacityPeople: cap, pricePerHour: price, photoUris: photos }],
       };
     });
+    if (isPrimaryStudio) {
+      setOwnerStudio((s) => {
+        if (editingRoomId) {
+          return {
+            ...s,
+            rooms: s.rooms.map((room) =>
+              room.id === editingRoomId ? { ...room, name, capacityPeople: cap, pricePerHour: price, photoUris: photos } : room,
+            ),
+          };
+        }
+        return {
+          ...s,
+          rooms: [...s.rooms, { id: nextId as string, name, capacityPeople: cap, pricePerHour: price, photoUris: photos }],
+        };
+      });
+    }
     if (nextId) setRoomId(nextId);
     setRoomModalOpen(false);
   };
@@ -263,7 +330,10 @@ export function StudioAgendaScreen({
         text: 'Excluir',
         style: 'destructive',
         onPress: () => {
-          setOwnerStudio((s) => ({ ...s, rooms: s.rooms.filter((room) => room.id !== roomId) }));
+          setStudioState((s) => ({ ...s, rooms: s.rooms.filter((room) => room.id !== roomId) }));
+          if (isPrimaryStudio) {
+            setOwnerStudio((s) => ({ ...s, rooms: s.rooms.filter((room) => room.id !== roomId) }));
+          }
         },
       },
     ]);
@@ -279,7 +349,7 @@ export function StudioAgendaScreen({
       return;
     }
     if (!roomId) return;
-    setOwnerStudio((s) => {
+    setStudioState((s) => {
       const prevRoom = s.blockedRangesByRoomDate[roomId] ?? {};
       const prev = prevRoom[dateKey] ?? [];
       return {
@@ -293,6 +363,22 @@ export function StudioAgendaScreen({
         },
       };
     });
+    if (isPrimaryStudio) {
+      setOwnerStudio((s) => {
+        const prevRoom = s.blockedRangesByRoomDate[roomId] ?? {};
+        const prev = prevRoom[dateKey] ?? [];
+        return {
+          ...s,
+          blockedRangesByRoomDate: {
+            ...s.blockedRangesByRoomDate,
+            [roomId]: {
+              ...prevRoom,
+              [dateKey]: [...prev, { startMin: blockPreview.startMin, endMin: blockPreview.endMin }],
+            },
+          },
+        };
+      });
+    }
   };
 
   const blockWholeDay = () => {
@@ -303,7 +389,7 @@ export function StudioAgendaScreen({
       Alert.alert('Dia inteiro', 'Não é possível bloquear o dia inteiro porque já existe ensaio marcado neste dia.');
       return;
     }
-    setOwnerStudio((s) => {
+    setStudioState((s) => {
       const prevRoom = s.blockedRangesByRoomDate[roomId] ?? {};
       return {
         ...s,
@@ -316,11 +402,26 @@ export function StudioAgendaScreen({
         },
       };
     });
+    if (isPrimaryStudio) {
+      setOwnerStudio((s) => {
+        const prevRoom = s.blockedRangesByRoomDate[roomId] ?? {};
+        return {
+          ...s,
+          blockedRangesByRoomDate: {
+            ...s.blockedRangesByRoomDate,
+            [roomId]: {
+              ...prevRoom,
+              [dateKey]: [fullDay],
+            },
+          },
+        };
+      });
+    }
   };
 
   const unblockWholeDay = () => {
     if (!roomId) return;
-    setOwnerStudio((s) => {
+    setStudioState((s) => {
       const roomDays = s.blockedRangesByRoomDate[roomId] ?? {};
       if (!roomDays[dateKey]) return s;
       const nextRoomDays = { ...roomDays };
@@ -336,18 +437,42 @@ export function StudioAgendaScreen({
         blockedRangesByRoomDate: nextByRoomDate,
       };
     });
+    if (isPrimaryStudio) {
+      setOwnerStudio((s) => {
+        const roomDays = s.blockedRangesByRoomDate[roomId] ?? {};
+        if (!roomDays[dateKey]) return s;
+        const nextRoomDays = { ...roomDays };
+        delete nextRoomDays[dateKey];
+        const nextByRoomDate = { ...s.blockedRangesByRoomDate };
+        if (Object.keys(nextRoomDays).length === 0) {
+          delete nextByRoomDate[roomId];
+        } else {
+          nextByRoomDate[roomId] = nextRoomDays;
+        }
+        return {
+          ...s,
+          blockedRangesByRoomDate: nextByRoomDate,
+        };
+      });
+    }
   };
 
   const removeBlock = (r: MinuteRange) => {
     if (!roomId) return;
-    setOwnerStudio((s) => ({
+    setStudioState((s) => ({
       ...s,
       blockedRangesByRoomDate: removeBlockedRange(s.blockedRangesByRoomDate, roomId, dateKey, r),
     }));
+    if (isPrimaryStudio) {
+      setOwnerStudio((s) => ({
+        ...s,
+        blockedRangesByRoomDate: removeBlockedRange(s.blockedRangesByRoomDate, roomId, dateKey, r),
+      }));
+    }
   };
 
   const onBookingPress = (b: (typeof bookingsToday)[0]) => {
-    const sala = ownerStudio.rooms.find((r) => r.id === b.roomId);
+    const sala = studioState.rooms.find((r) => r.id === b.roomId);
     const cap = sala ? `\n${formatRoomCapacity(sala.capacityPeople)}` : '';
     Alert.alert(
       'Reserva',
@@ -376,6 +501,16 @@ export function StudioAgendaScreen({
       Alert.alert('Estúdio', 'A foto precisa ser um link começando com http:// ou https://.');
       return;
     }
+    if (!isPrimaryStudio) {
+      setStudioState((s) => ({
+        ...s,
+        addressLine: address,
+        logoUri: photoUrl,
+      }));
+      setStudioModalOpen(false);
+      Alert.alert('Estúdio', 'Dados do estúdio atualizados.');
+      return;
+    }
     setStudioSaving(true);
     void (async () => {
       try {
@@ -393,7 +528,7 @@ export function StudioAgendaScreen({
           studioName: name,
           addressLine: address,
           photoUrl,
-          rooms: ownerStudio.rooms,
+          rooms: studioState.rooms,
         });
         setStudioModalOpen(false);
         Alert.alert('Estúdio', 'Dados do estúdio atualizados.');
@@ -403,7 +538,7 @@ export function StudioAgendaScreen({
     })();
   };
 
-  const selectedRoom = ownerStudio.rooms.find((r) => r.id === roomId);
+  const selectedRoom = studioState.rooms.find((r) => r.id === roomId);
   const priceHint = Number.parseFloat(priceDraft.replace(',', '.')) || 0;
 
   return (
@@ -431,11 +566,11 @@ export function StudioAgendaScreen({
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <StudioLogoBanner uri={ownerStudio.logoUri} height={128} />
+        <StudioLogoBanner uri={studioState.logoUri} height={128} />
 
         <View style={styles.studioTitleBlock}>
-          <Text style={styles.studioName}>{profile.studioName ?? 'Seu estúdio'}</Text>
-          {ownerStudio.addressLine ? <Text style={styles.studioAddress}>{ownerStudio.addressLine}</Text> : null}
+          <Text style={styles.studioName}>{activeStudioName}</Text>
+          {studioState.addressLine ? <Text style={styles.studioAddress}>{studioState.addressLine}</Text> : null}
           <Text style={styles.sub}>
             Escolha a sala (capacidade em destaque; fotos abaixo). Reservas (verde) e bloqueios (vermelho) são por sala.
           </Text>
@@ -444,7 +579,7 @@ export function StudioAgendaScreen({
           </Pressable>
         </View>
 
-        <Text style={[styles.section, { marginTop: 4, marginBottom: 8 }]}>Salas</Text>
+        <Text style={[styles.section, { marginTop: 4, marginBottom: 8 }]}>1. Salas do estúdio</Text>
         <View style={styles.roomToolbar}>
           <Pressable onPress={openCreateRoom} style={({ pressed }) => [styles.roomToolbarBtn, pressed && styles.pressed]} accessibilityRole="button">
             <Text style={styles.roomToolbarBtnText}>Nova sala</Text>
@@ -460,11 +595,11 @@ export function StudioAgendaScreen({
             </>
           ) : null}
         </View>
-        {ownerStudio.rooms.length === 0 ? (
+        {studioState.rooms.length === 0 ? (
           <Text style={[styles.muted, { marginBottom: 14 }]}>Ainda não há salas cadastradas neste estúdio.</Text>
         ) : (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.roomPickRow}>
-            {ownerStudio.rooms.map((r) => {
+            {studioState.rooms.map((r) => {
               const on = roomId === r.id;
               return (
                 <Pressable
@@ -490,10 +625,10 @@ export function StudioAgendaScreen({
           </ScrollView>
         )}
 
-        {ownerStudio.rooms.length > 0 && roomId ? (
+        {studioState.rooms.length > 0 && roomId ? (
           <View style={styles.roomPhotosBlock}>
             <RoomPhotosStrip
-              uris={ownerStudio.rooms.find((x) => x.id === roomId)?.photoUris}
+              uris={studioState.rooms.find((x) => x.id === roomId)?.photoUris}
               title="Fotos desta sala"
               variant="grid"
             />
@@ -514,7 +649,7 @@ export function StudioAgendaScreen({
           {priceHint > 0 ? `Para marcar ensaio: ~R$ ${priceHint.toFixed(2)}/h (proporcional ao tempo).` : ''}
         </Text>
 
-        <Text style={[styles.section, styles.sectionSpaced]}>Calendário</Text>
+        <Text style={[styles.section, styles.sectionSpaced]}>2. Calendário da sala selecionada</Text>
         <MonthCalendar
           viewYear={viewYear}
           viewMonth={viewMonth}
@@ -545,7 +680,7 @@ export function StudioAgendaScreen({
         <Text style={[styles.section, styles.sectionSpaced]}>Linha do dia</Text>
         <DayTimeline segments={segments} previewRange={blockPreview} />
 
-        <Text style={[styles.section, styles.sectionSpaced]}>Novo bloqueio (manutenção / indisponível)</Text>
+        <Text style={[styles.section, styles.sectionSpaced]}>3. Bloqueios da sala selecionada</Text>
         <View style={styles.dayBlockActions}>
           <Pressable onPress={blockWholeDay} style={({ pressed }) => [styles.roomToolbarBtnDanger, pressed && styles.pressed]} accessibilityRole="button">
             <Text style={styles.roomToolbarBtnDangerText}>Bloquear dia inteiro</Text>
@@ -613,7 +748,7 @@ export function StudioAgendaScreen({
         <Text style={[styles.section, styles.sectionSpaced]}>Reservas neste dia</Text>
         <View style={styles.card}>
           {bookingsToday.length === 0 ? (
-            <Text style={styles.muted}>Nenhuma reserva de exemplo neste dia.</Text>
+            <Text style={styles.muted}>Nenhuma reserva neste dia.</Text>
           ) : (
             bookingsToday.map((b) => (
               <Pressable key={b.id} onPress={() => onBookingPress(b)} style={styles.bookingRow}>
@@ -747,28 +882,36 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: 14,
   },
   back: { paddingVertical: 8, paddingHorizontal: 4, minWidth: 72 },
   backText: { color: COLORS.accent, fontSize: 16, fontWeight: '600' },
   topTitle: { fontSize: 17, fontWeight: '800', color: COLORS.text },
-  studioTitleBlock: { marginTop: 14, marginBottom: 4 },
+  studioTitleBlock: {
+    marginTop: 14,
+    marginBottom: 12,
+    backgroundColor: COLORS.bgElevated,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 14,
+  },
   studioName: { fontSize: 22, fontWeight: '800', color: COLORS.text, marginBottom: 8 },
   studioAddress: { fontSize: 14, color: COLORS.accent, marginBottom: 8, lineHeight: 20 },
-  sub: { fontSize: 14, color: COLORS.muted, lineHeight: 21, marginBottom: 14 },
+  sub: { fontSize: 14, color: COLORS.muted, lineHeight: 21, marginBottom: 12 },
   roomToolbar: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 10,
+    gap: 10,
+    marginBottom: 12,
   },
   roomToolbarBtn: {
     borderWidth: 1,
     borderColor: COLORS.border,
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    borderRadius: 12,
+    paddingVertical: 9,
+    paddingHorizontal: 13,
   },
   roomToolbarBtnText: {
     color: COLORS.text,
@@ -779,18 +922,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,122,155,0.45)',
     backgroundColor: 'rgba(255,122,155,0.14)',
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    borderRadius: 12,
+    paddingVertical: 9,
+    paddingHorizontal: 13,
   },
   roomToolbarBtnDangerText: {
     color: COLORS.danger,
     fontSize: 13,
     fontWeight: '800',
   },
-  roomPickRow: { flexDirection: 'row', gap: 18, paddingVertical: 8, marginBottom: 18, paddingRight: 12 },
+  roomPickRow: { flexDirection: 'row', gap: 12, paddingVertical: 8, marginBottom: 18, paddingRight: 12 },
   roomPickCard: {
-    width: 140,
+    width: 152,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -844,7 +987,7 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.8,
   },
-  sectionSpaced: { marginTop: 22, marginBottom: 10 },
+  sectionSpaced: { marginTop: 20, marginBottom: 10 },
   unavailableBanner: {
     marginTop: 10,
     backgroundColor: 'rgba(255,122,155,0.16)',
