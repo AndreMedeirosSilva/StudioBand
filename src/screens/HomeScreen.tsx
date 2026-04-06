@@ -52,7 +52,7 @@ type Props = {
   profile: UserProfile;
   ownerStudio: OwnerStudioState;
   onBook: () => void;
-  onStudioAgenda: () => void;
+  onStudioAgenda: (studioId?: string, studioName?: string) => void;
   onLogout: () => void;
   mode?: 'home' | 'bandas' | 'estudios';
   onGoBands?: () => void;
@@ -100,11 +100,11 @@ export function HomeScreen({
   >({});
   const [membersLoadingByBand, setMembersLoadingByBand] = useState<Record<string, boolean>>({});
   const [expandedMemberBands, setExpandedMemberBands] = useState<Record<string, boolean>>({});
-  const [studioMembers, setStudioMembers] = useState<
-    { userId: string; displayName: string | null; email: string | null; role: 'admin' | 'member'; joinedAt: string | null }[]
-  >([]);
-  const [studioMembersOpen, setStudioMembersOpen] = useState(false);
-  const [studioMembersLoading, setStudioMembersLoading] = useState(false);
+  const [studioMembersByStudio, setStudioMembersByStudio] = useState<
+    Record<string, { userId: string; displayName: string | null; email: string | null; role: 'admin' | 'member'; joinedAt: string | null }[]>
+  >({});
+  const [expandedMemberStudios, setExpandedMemberStudios] = useState<Record<string, boolean>>({});
+  const [membersLoadingByStudio, setMembersLoadingByStudio] = useState<Record<string, boolean>>({});
   const [joinCode, setJoinCode] = useState('');
   const [joinBandPreview, setJoinBandPreview] = useState<string | null>(null);
   const [joinStudioPreviewMain, setJoinStudioPreviewMain] = useState<string | null>(null);
@@ -140,9 +140,9 @@ export function HomeScreen({
       setMembersByBand({});
       setExpandedMemberBands({});
       setMembersLoadingByBand({});
-      setStudioMembers([]);
-      setStudioMembersOpen(false);
-      setStudioMembersLoading(false);
+      setStudioMembersByStudio({});
+      setExpandedMemberStudios({});
+      setMembersLoadingByStudio({});
       return;
     }
     void (async () => {
@@ -227,12 +227,6 @@ export function HomeScreen({
     }
     void refreshStudioInviteToken(profile.userId, true);
   }, [profile.userId, profile.studioName, refreshStudioInviteToken]);
-
-  useEffect(() => {
-    setStudioMembers([]);
-    setStudioMembersOpen(false);
-    setStudioMembersLoading(false);
-  }, [profile.ownerStudioId]);
 
   const openStudioCreateModal = useCallback(() => {
     setStudioNameDraft('');
@@ -360,86 +354,110 @@ export function HomeScreen({
     setStudioRoomsDraft((prev) => prev.filter((r) => r.id !== roomId));
   }, []);
 
-  const toggleStudioPartners = useCallback(async () => {
-    const next = !studioMembersOpen;
-    setStudioMembersOpen(next);
-    if (!next || studioMembers.length > 0 || !profile.userId || !profile.ownerStudioId) return;
-    setStudioMembersLoading(true);
-    try {
-      const rows = await listStudioMembersForAdmin(profile.userId, profile.ownerStudioId);
-      setStudioMembers(rows);
-    } finally {
-      setStudioMembersLoading(false);
-    }
-  }, [profile.ownerStudioId, profile.userId, studioMembers.length, studioMembersOpen]);
+  const toggleStudioPartners = useCallback(
+    async (studioId: string) => {
+      const nextOpen = !expandedMemberStudios[studioId];
+      setExpandedMemberStudios((prev) => ({ ...prev, [studioId]: nextOpen }));
+      if (!nextOpen || studioMembersByStudio[studioId] || !profile.userId) return;
+      setMembersLoadingByStudio((prev) => ({ ...prev, [studioId]: true }));
+      try {
+        const rows = await listStudioMembersForAdmin(profile.userId, studioId);
+        setStudioMembersByStudio((prev) => ({ ...prev, [studioId]: rows }));
+      } finally {
+        setMembersLoadingByStudio((prev) => ({ ...prev, [studioId]: false }));
+      }
+    },
+    [expandedMemberStudios, profile.userId, studioMembersByStudio],
+  );
 
   const runRemoveStudioPartner = useCallback(
-    async (memberUserId: string) => {
-      if (!profile.userId || !profile.ownerStudioId) return;
+    async (studioId: string, memberUserId: string) => {
+      if (!profile.userId) return;
       setStudioInviteBusy(true);
       try {
-        const res = await removeStudioMemberForAdmin(profile.userId, profile.ownerStudioId, memberUserId);
+        const res = await removeStudioMemberForAdmin(profile.userId, studioId, memberUserId);
         if (!res.ok) {
           Alert.alert('Sócios', res.message);
           return;
         }
-        const rows = await listStudioMembersForAdmin(profile.userId, profile.ownerStudioId);
-        setStudioMembers(rows);
+        const rows = await listStudioMembersForAdmin(profile.userId, studioId);
+        setStudioMembersByStudio((prev) => ({ ...prev, [studioId]: rows }));
         Alert.alert('Sócios', 'Sócio removido do estúdio.');
       } finally {
         setStudioInviteBusy(false);
       }
     },
-    [profile.ownerStudioId, profile.userId],
+    [profile.userId],
   );
 
   const askRemoveStudioPartner = useCallback(
-    (memberUserId: string, memberLabel: string) => {
+    (studioId: string, memberUserId: string, memberLabel: string) => {
       const message = `Remover "${memberLabel}" dos sócios deste estúdio?`;
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
         if (!window.confirm(message)) return;
-        void runRemoveStudioPartner(memberUserId);
+        void runRemoveStudioPartner(studioId, memberUserId);
         return;
       }
       Alert.alert('Remover sócio', message, [
         { text: 'Cancelar', style: 'cancel' },
-        { text: 'Remover', style: 'destructive', onPress: () => void runRemoveStudioPartner(memberUserId) },
+        { text: 'Remover', style: 'destructive', onPress: () => void runRemoveStudioPartner(studioId, memberUserId) },
       ]);
     },
     [runRemoveStudioPartner],
   );
 
-  const applyRegenerateStudioInvite = useCallback(() => {
+  const applyRegenerateStudioInvite = useCallback((studioId: string) => {
     if (!profile.userId) return;
     setStudioInviteBusy(true);
     void (async () => {
       try {
-        const res = await regenerateManagedStudioInvite(profile.userId);
+        const res = await regenerateManagedStudioInvite(profile.userId, studioId);
         if (!res.ok) {
           Alert.alert('Estúdio', res.message);
           return;
         }
-        setStudioInviteToken(res.inviteToken);
+        setOwnedStudios((prev) => prev.map((row) => (row.id === studioId ? { ...row, inviteToken: res.inviteToken } : row)));
+        if (activeStudioCarouselId === studioId) {
+          setStudioInviteToken(res.inviteToken);
+        }
         Alert.alert('Convite atualizado', 'Novo código de convite do estúdio gerado.');
       } finally {
         setStudioInviteBusy(false);
       }
     })();
-  }, [profile.userId]);
+  }, [activeStudioCarouselId, profile.userId]);
 
-  const applyDeleteStudio = useCallback(() => {
+  const applyDeleteStudio = useCallback((studioId: string, studioName: string) => {
     if (!profile.userId) return;
-    const title = profile.studioName?.trim() || 'este estúdio';
+    const title = studioName.trim() || 'este estúdio';
     const runDelete = async () => {
       setStudioInviteBusy(true);
       try {
-        const res = await deleteManagedStudio(profile.userId);
+        const res = await deleteManagedStudio(profile.userId, studioId);
         if (!res.ok) {
           Alert.alert('Estúdio', res.message);
           return;
         }
         onProfileUpdate(res.profile);
-        setStudioInviteToken(null);
+        await refreshStudioData();
+        setStudioMembersByStudio((prev) => {
+          const next = { ...prev };
+          delete next[studioId];
+          return next;
+        });
+        setExpandedMemberStudios((prev) => {
+          const next = { ...prev };
+          delete next[studioId];
+          return next;
+        });
+        setMembersLoadingByStudio((prev) => {
+          const next = { ...prev };
+          delete next[studioId];
+          return next;
+        });
+        if (activeStudioCarouselId === studioId) {
+          setStudioInviteToken(null);
+        }
         Alert.alert('Estúdio removido', `${title} foi excluído com sucesso.`);
       } finally {
         setStudioInviteBusy(false);
@@ -455,7 +473,7 @@ export function HomeScreen({
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Excluir', style: 'destructive', onPress: () => void runDelete() },
     ]);
-  }, [onProfileUpdate, profile.studioName, profile.userId]);
+  }, [activeStudioCarouselId, onProfileUpdate, profile.userId, refreshStudioData]);
 
   const toggleBandMembers = useCallback(
     async (bandId: string) => {
@@ -834,6 +852,8 @@ export function HomeScreen({
     ownedBandsWithInfo.length > 1 ? 'Códigos de convite (bandas)' : 'Código de convite (banda)';
   const studioInviteTitle =
     studioCarouselItems.length > 1 ? 'Códigos de convite (estúdios)' : 'Código de convite (estúdio)';
+  const bandsMenuTitle = bandRows.length > 0 ? 'Bandas' : 'Sem bandas';
+  const studiosMenuTitle = ownedStudios.length > 0 ? 'Estúdios' : 'Sem estúdios';
 
   const goToPreviousOwnedBand = useCallback(() => {
     if (ownedBandsWithInfo.length < 2 || selectedOwnedBandIndex < 0) return;
@@ -921,6 +941,37 @@ export function HomeScreen({
         <Text style={styles.appName}>Estudio Banda</Text>
         <Text style={styles.pageBreadcrumb}>{pageBreadcrumb}</Text>
 
+        {onBackHome && mode !== 'home' ? (
+          <Pressable
+            onPress={onBackHome}
+            style={({ pressed }) => [styles.screenBack, styles.screenBackTop, pressed && styles.pressed]}
+            accessibilityRole="button"
+          >
+            <Text style={styles.screenBackText}>← Voltar</Text>
+          </Pressable>
+        ) : null}
+
+        {mode === 'home' ? (
+          <View style={styles.topMenuWrap}>
+            <Pressable
+              onPress={onGoBands}
+              style={({ pressed }) => [styles.topMenuBtn, pressed && styles.pressed]}
+              accessibilityRole="button"
+            >
+              <Text style={styles.topMenuBtnLabel}>Bandas</Text>
+              <Text style={styles.topMenuBtnMeta}>{bandRows.length > 0 ? `${bandRows.length} item(ns)` : 'Sem bandas'}</Text>
+            </Pressable>
+            <Pressable
+              onPress={onGoStudios}
+              style={({ pressed }) => [styles.topMenuBtn, styles.topMenuBtnAlt, pressed && styles.pressed]}
+              accessibilityRole="button"
+            >
+              <Text style={styles.topMenuBtnLabel}>Estúdios</Text>
+              <Text style={styles.topMenuBtnMeta}>{ownedStudios.length > 0 ? `${ownedStudios.length} item(ns)` : 'Sem estúdios'}</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         {mode === 'home' ? (
           <Pressable onPress={onBook} style={({ pressed }) => [styles.cta, pressed && styles.pressed]} accessibilityRole="button">
             <Text style={styles.ctaTitle}>Marcar ensaio</Text>
@@ -932,36 +983,16 @@ export function HomeScreen({
           </Pressable>
         ) : null}
 
-        <View style={styles.bandHub}>
-          <Text style={styles.bandHubEyebrow}>
-            {mode === 'home' ? 'Convites' : mode === 'bandas' ? 'Bandas' : 'Estúdios'}
-          </Text>
-          <Text style={styles.bandHubTitle}>
-            {mode === 'home'
-              ? 'Entrar com convite e ver minhas listas'
-              : mode === 'bandas'
-                ? 'Página de bandas'
-                : 'Página de estúdios'}
-          </Text>
-          <Text style={styles.bandHubLead}>
-            {mode === 'home'
-              ? 'A Home mostra só convites e uma lista rápida de bandas e estúdios.'
-              : mode === 'bandas'
-                ? 'Toda a administração de bandas fica separada nesta página.'
-                : 'Toda a administração de estúdios fica separada nesta página.'}
-          </Text>
-
-          {onBackHome && mode !== 'home' ? (
-            <Pressable
-              onPress={onBackHome}
-              style={({ pressed }) => [styles.ownerCrudBtn, pressed && styles.pressed]}
-              accessibilityRole="button"
-            >
-              <Text style={styles.ownerCrudBtnText}>Voltar para Home</Text>
-            </Pressable>
+        <View style={[styles.bandHub, mode !== 'home' && styles.bandHubModeScreen]}>
+          {mode === 'home' ? (
+            <>
+              <Text style={styles.bandHubEyebrow}>Convites</Text>
+              <Text style={styles.bandHubTitle}>Entrar com convite</Text>
+              <Text style={styles.bandHubLead}>Use os convites para entrar rápido em bandas e estúdios.</Text>
+            </>
           ) : null}
 
-          <View style={styles.bandHubDivider} />
+          {mode === 'home' ? <View style={styles.bandHubDivider} /> : null}
 
           {effectiveBandMenu === 'convites' ? (
             <>
@@ -1173,7 +1204,7 @@ export function HomeScreen({
                                 <Text style={styles.inviteBtnText}>Copiar link</Text>
                               </Pressable>
                               <Pressable
-                                onPress={() => void applyRegenerateStudioInvite()}
+                                onPress={() => void applyRegenerateStudioInvite(selectedStudioCarousel.id)}
                                 disabled={studioInviteBusy}
                                 style={({ pressed }) => [
                                   styles.inviteBtnSecondary,
@@ -1251,22 +1282,14 @@ export function HomeScreen({
               <Text style={styles.adminPageTitle}>Administração de bandas</Text>
               <Text style={styles.adminPageLead}>Escolha uma banda para editar, organizar integrantes e manter tudo em dia.</Text>
               <View style={styles.bandsPanel}>
-                <Text style={styles.bandsPanelTitle}>Menu · Minhas bandas</Text>
+                <Text style={styles.bandsPanelTitle}>{bandsMenuTitle}</Text>
                 <Text style={styles.bandsPanelLead}>
                   Administre cada banda por aqui: editar nome, gerar novo código e excluir.
                 </Text>
                 {bandRows.length > 0 ? (
-                  bandRows.map((row, i) => (
-                    <View
-                      key={`${row.id}-${row.role}-${i}`}
-                      style={[styles.bandChip, i > 0 && styles.bandChipSpaced]}
-                    >
-                      {row.photoUrl ? (
-                        <View style={styles.bandChipBackdrop} pointerEvents="none">
-                          <Image source={{ uri: row.photoUrl }} style={styles.bandChipBackdropImage} />
-                          <View style={styles.bandChipBackdropFade} />
-                        </View>
-                      ) : null}
+                  <View style={styles.listStack}>
+                  {bandRows.map((row, i) => (
+                    <View key={`${row.id}-${row.role}-${i}`} style={[styles.bandChip, i > 0 && styles.bandChipSpaced]}>
                       <View style={styles.bandChipTopRow}>
                         <View style={styles.bandAvatarListWrap}>
                           {row.photoUrl ? (
@@ -1296,6 +1319,7 @@ export function HomeScreen({
                               onPress={() => openEditBandModal(row.id, row.name, row.photoUrl)}
                               disabled={bandCrudBusy}
                               style={({ pressed }) => [
+                                styles.ownerCrudBtnPrimary,
                                 styles.ownerCrudBtn,
                                 bandCrudBusy && styles.joinBtnOff,
                                 pressed && !bandCrudBusy && styles.pressed,
@@ -1303,7 +1327,7 @@ export function HomeScreen({
                               accessibilityRole="button"
                               accessibilityLabel={`Editar ${row.name}`}
                             >
-                              <Text style={styles.ownerCrudBtnText}>Editar</Text>
+                              <Text style={[styles.ownerCrudBtnText, styles.ownerCrudBtnPrimaryText]}>Editar</Text>
                             </Pressable>
                             <Pressable
                               onPress={() => void applyRegenerateInvite(row.id)}
@@ -1374,6 +1398,7 @@ export function HomeScreen({
                                             }
                                             disabled={bandCrudBusy}
                                             style={({ pressed }) => [
+                                              styles.ownerCrudBtnPrimary,
                                               styles.ownerCrudBtn,
                                               bandCrudBusy && styles.joinBtnOff,
                                               pressed && !bandCrudBusy && styles.pressed,
@@ -1381,7 +1406,7 @@ export function HomeScreen({
                                             accessibilityRole="button"
                                             accessibilityLabel={`Promover ${member.displayName || member.email || 'integrante'}`}
                                           >
-                                            <Text style={styles.ownerCrudBtnText}>Tornar administrador</Text>
+                                            <Text style={[styles.ownerCrudBtnText, styles.ownerCrudBtnPrimaryText]}>Tornar administrador</Text>
                                           </Pressable>
                                         ) : (
                                           <Pressable
@@ -1439,6 +1464,7 @@ export function HomeScreen({
                             onPress={() => void toggleBandMembers(row.id)}
                             disabled={membersLoadingByBand[row.id]}
                             style={({ pressed }) => [
+                              styles.ownerCrudBtnPrimary,
                               styles.ownerCrudBtn,
                               membersLoadingByBand[row.id] && styles.joinBtnOff,
                               pressed && !membersLoadingByBand[row.id] && styles.pressed,
@@ -1446,7 +1472,7 @@ export function HomeScreen({
                             accessibilityRole="button"
                             accessibilityLabel={`Ver sócios de ${row.name}`}
                           >
-                            <Text style={styles.ownerCrudBtnText}>
+                            <Text style={[styles.ownerCrudBtnText, styles.ownerCrudBtnPrimaryText]}>
                               {expandedMemberBands[row.id] ? 'Ocultar sócios' : 'Ver sócios'}
                             </Text>
                           </Pressable>
@@ -1487,7 +1513,8 @@ export function HomeScreen({
                         </View>
                       ) : null}
                     </View>
-                  ))
+                  ))}
+                  </View>
                 ) : (
                   <Text style={styles.bandsEmpty}>
                     Ainda sem bandas — use o menu Convites para cadastrar ou entrar em uma banda.
@@ -1497,232 +1524,169 @@ export function HomeScreen({
             </View>
           ) : (
             <View style={styles.adminPageWrap}>
-              <Text style={styles.adminPageTitle}>Menu de estúdios</Text>
+              <Text style={styles.adminPageTitle}>Administração de estúdios</Text>
               <Text style={styles.adminPageLead}>
-                Convites de banda ficam na aba Convites, gestão de bandas na aba Bandas e estúdios na seção Meus estúdios.
+                Escolha um estúdio para editar, gerenciar sócios e manter convites organizados.
               </Text>
               <View style={styles.bandsPanel}>
-                <Text style={styles.bandsPanelTitle}>Acesso rápido · Estúdios</Text>
-                <View style={styles.bandChipActions}>
-                  <Pressable
-                    onPress={openStudioCreateModal}
-                    style={({ pressed }) => [styles.ownerCrudBtn, pressed && styles.pressed]}
-                    accessibilityRole="button"
-                  >
-                    <Text style={styles.ownerCrudBtnText}>Cadastrar estúdio</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={onStudioAgenda}
-                    style={({ pressed }) => [styles.ownerCrudBtn, pressed && styles.pressed]}
-                    accessibilityRole="button"
-                  >
-                    <Text style={styles.ownerCrudBtnText}>Meus estúdios</Text>
-                  </Pressable>
-                </View>
+                <Text style={styles.bandsPanelTitle}>{studiosMenuTitle}</Text>
+                <Text style={styles.bandsPanelLead}>
+                  Administre cada estúdio por aqui: editar dados, gerar novo código, ver sócios e excluir.
+                </Text>
+                {ownedStudios.length > 0 ? (
+                  <View style={styles.listStack}>
+                  {ownedStudios.map((row, i) => {
+                    const isPrimaryStudioRow = row.id === profile.ownerStudioId;
+                    const isStudioMembersOpen = !!expandedMemberStudios[row.id];
+                    const studioMembers = studioMembersByStudio[row.id] ?? [];
+                    const isStudioMembersLoading = !!membersLoadingByStudio[row.id];
+                    return (
+                      <View key={`${row.id}-${i}`} style={[styles.bandChip, i > 0 && styles.bandChipSpaced]}>
+                        <View style={styles.bandChipTopRow}>
+                          <View style={styles.bandAvatarListWrap}>
+                            {row.photoUrl ? (
+                              <Image source={{ uri: row.photoUrl }} style={styles.bandAvatarListImg} />
+                            ) : (
+                              <Text style={styles.bandAvatarListFallback}>{row.name.slice(0, 2).toUpperCase()}</Text>
+                            )}
+                          </View>
+                          <View style={styles.bandChipMain}>
+                            <Text style={styles.bandChipName} numberOfLines={1}>
+                              {row.name}
+                            </Text>
+                            <Text style={styles.bandChipRole} numberOfLines={1}>
+                              Administrador
+                            </Text>
+                            {isPrimaryStudioRow && ownerStudio.addressLine ? (
+                              <Text style={styles.bandChipInfo} numberOfLines={1}>
+                                {ownerStudio.addressLine}
+                              </Text>
+                            ) : null}
+                            {row.inviteToken ? (
+                              <Text style={styles.bandChipInfo} numberOfLines={1}>
+                                Convite: {row.inviteToken}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </View>
+                        <View style={styles.bandChipActions}>
+                          <Pressable
+                            onPress={() => {
+                              onStudioAgenda(row.id, row.name);
+                            }}
+                            style={({ pressed }) => [
+                              styles.ownerCrudBtnPrimary,
+                              styles.ownerCrudBtn,
+                              pressed && styles.pressed,
+                            ]}
+                            accessibilityRole="button"
+                          >
+                            <Text style={[styles.ownerCrudBtnText, styles.ownerCrudBtnPrimaryText]}>Gerenciar salas</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => {
+                              onStudioAgenda(row.id, row.name);
+                            }}
+                            style={({ pressed }) => [
+                              styles.ownerCrudBtn,
+                              pressed && styles.pressed,
+                            ]}
+                            accessibilityRole="button"
+                          >
+                            <Text style={styles.ownerCrudBtnText}>Editar</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => void applyRegenerateStudioInvite(row.id)}
+                            disabled={studioInviteBusy}
+                            style={({ pressed }) => [
+                              styles.ownerCrudBtn,
+                              studioInviteBusy && styles.joinBtnOff,
+                              pressed && !studioInviteBusy && styles.pressed,
+                            ]}
+                            accessibilityRole="button"
+                          >
+                            <Text style={styles.ownerCrudBtnText}>Novo código</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => void toggleStudioPartners(row.id)}
+                            disabled={isStudioMembersLoading}
+                            style={({ pressed }) => [
+                              styles.ownerCrudBtn,
+                              isStudioMembersLoading && styles.joinBtnOff,
+                              pressed && !isStudioMembersLoading && styles.pressed,
+                            ]}
+                            accessibilityRole="button"
+                          >
+                            <Text style={styles.ownerCrudBtnText}>{isStudioMembersOpen ? 'Ocultar sócios' : 'Ver sócios'}</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => void applyDeleteStudio(row.id, row.name)}
+                            disabled={studioInviteBusy}
+                            style={({ pressed }) => [
+                              styles.ownerCrudBtnDanger,
+                              studioInviteBusy && styles.joinBtnOff,
+                              pressed && !studioInviteBusy && styles.pressed,
+                            ]}
+                            accessibilityRole="button"
+                          >
+                            <Text style={styles.ownerCrudBtnDangerText}>Excluir</Text>
+                          </Pressable>
+                        </View>
+                        {isStudioMembersOpen ? (
+                          <View style={styles.membersPanel}>
+                            {isStudioMembersLoading ? (
+                              <Text style={styles.membersHint}>Carregando sócios...</Text>
+                            ) : studioMembers.length > 0 ? (
+                              studioMembers.map((member) => (
+                                <View key={`studio-${member.userId}`} style={styles.memberRow}>
+                                  <Text style={styles.memberName}>
+                                    {member.displayName?.trim() || member.email || 'Sócio sem nome'}
+                                  </Text>
+                                  <Text style={styles.memberMeta}>
+                                    {member.role === 'admin' ? 'Administrador' : 'Membro'}
+                                    {member.email ? ` · ${member.email}` : ''}
+                                  </Text>
+                                  {member.userId !== profile.userId ? (
+                                    <View style={styles.memberActions}>
+                                      <Pressable
+                                        onPress={() =>
+                                          askRemoveStudioPartner(
+                                              row.id,
+                                            member.userId,
+                                            member.displayName?.trim() || member.email || 'Sócio',
+                                          )
+                                        }
+                                        disabled={studioInviteBusy}
+                                        style={({ pressed }) => [
+                                          styles.ownerCrudBtnDanger,
+                                          studioInviteBusy && styles.joinBtnOff,
+                                          pressed && !studioInviteBusy && styles.pressed,
+                                        ]}
+                                        accessibilityRole="button"
+                                      >
+                                        <Text style={styles.ownerCrudBtnDangerText}>Remover</Text>
+                                      </Pressable>
+                                    </View>
+                                  ) : null}
+                                </View>
+                              ))
+                            ) : (
+                              <Text style={styles.membersHint}>Nenhum sócio visível neste estúdio.</Text>
+                            )}
+                          </View>
+                        ) : null}
+                      </View>
+                    );
+                  })}
+                  </View>
+                ) : (
+                  <Text style={styles.bandsEmpty}>Ainda sem estúdios — cadastre seu primeiro estúdio para começar.</Text>
+                )}
               </View>
             </View>
           )}
 
-          {mode === 'home' ? (
-            <View style={styles.bandsPanel}>
-              <Text style={styles.bandsPanelTitle}>Listas rápidas</Text>
-              <Text style={styles.bandsPanelLead}>Bandas e estúdios que você já tem no perfil.</Text>
-              <Text style={styles.bandOwnerNote}>
-                Bandas: {bandRows.length > 0 ? bandRows.map((b) => b.name).join(' · ') : 'Nenhuma banda ainda'}
-              </Text>
-              <Text style={styles.bandOwnerNote}>
-                Estúdios: {ownedStudios.length > 0 ? ownedStudios.map((s) => s.name).join(' · ') : 'Nenhum estúdio ainda'}
-              </Text>
-              <View style={styles.bandChipActions}>
-                <Pressable
-                  onPress={onGoBands}
-                  style={({ pressed }) => [styles.ownerCrudBtn, pressed && styles.pressed]}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.ownerCrudBtnText}>Abrir página Bandas</Text>
-                </Pressable>
-                <Pressable
-                  onPress={onGoStudios}
-                  style={({ pressed }) => [styles.ownerCrudBtn, pressed && styles.pressed]}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.ownerCrudBtnText}>Abrir página Estúdios</Text>
-                </Pressable>
-              </View>
-            </View>
-          ) : null}
         </View>
-
-        {mode === 'estudios' ? (
-          <View style={styles.studioHub}>
-          <Text style={styles.studioHubEyebrow}>Meus estúdios</Text>
-          <Text style={styles.bandHubTitle}>Área de estúdios (separada de bandas)</Text>
-          <Text style={styles.bandHubLead}>
-            Tudo de estúdio fica aqui: cadastro, convite, sócios e gestão de salas.
-          </Text>
-
-          <View style={[styles.bandHubGrid, width >= 640 && styles.bandHubGridWide]}>
-            <View style={[styles.bandHubCol, width >= 640 && styles.bandHubColWide]}>
-              <View style={styles.bandPathCard}>
-                <View style={styles.bandPathHead}>
-                  <View style={styles.bandPathBadge}>
-                    <Text style={styles.bandPathBadgeTxt}>1</Text>
-                  </View>
-                  <Text style={styles.bandPathTitle}>Cadastrar estúdio</Text>
-                </View>
-                <Text style={styles.bandPathBody}>
-                  Cadastre outro estúdio quando quiser. A edição dos dados fica em "Meus estúdios".
-                </Text>
-                <Pressable
-                  onPress={openStudioCreateModal}
-                  style={({ pressed }) => [styles.registerBandBtn, pressed && styles.pressed]}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.registerBandBtnText}>Cadastrar estúdio</Text>
-                </Pressable>
-                <Text style={styles.joinPreviewMuted}>Convite de estúdio usa o campo universal "Entrar com código".</Text>
-                {profile.studioName ? (
-                  <>
-                    <Text style={styles.bandOwnerNote}>{profile.studioName}</Text>
-                    {ownerStudio.addressLine ? <Text style={styles.bandOwnerNote}>{ownerStudio.addressLine}</Text> : null}
-                  </>
-                ) : null}
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.bandHubDivider} />
-
-          <View style={styles.bandsPanel}>
-            <Text style={styles.bandsPanelTitle}>Menu · Meus estúdios (separado de Minhas bandas)</Text>
-            <Text style={styles.bandsPanelLead}>
-              Gestão exclusiva de estúdios: editar, convite, sócios e excluir.
-            </Text>
-            {profile.studioName ? (
-              <View style={styles.bandChip}>
-                {ownerStudio.logoUri ? (
-                  <View style={styles.bandChipBackdrop} pointerEvents="none">
-                    <Image source={{ uri: ownerStudio.logoUri }} style={styles.bandChipBackdropImage} />
-                    <View style={styles.bandChipBackdropFade} />
-                  </View>
-                ) : null}
-                <View style={styles.bandChipTopRow}>
-                  <View style={styles.bandAvatarListWrap}>
-                    {ownerStudio.logoUri ? (
-                      <Image source={{ uri: ownerStudio.logoUri }} style={styles.bandAvatarListImg} />
-                    ) : (
-                      <Text style={styles.bandAvatarListFallback}>{profile.studioName.slice(0, 2).toUpperCase()}</Text>
-                    )}
-                  </View>
-                  <View style={styles.bandChipMain}>
-                    <Text style={styles.bandChipName} numberOfLines={1}>
-                      {profile.studioName}
-                    </Text>
-                    <Text style={styles.bandChipRole} numberOfLines={1}>
-                      Administrador
-                    </Text>
-                    {ownerStudio.addressLine ? (
-                      <Text style={styles.bandChipInfo} numberOfLines={1}>
-                        {ownerStudio.addressLine}
-                      </Text>
-                    ) : null}
-                    {studioInviteToken ? (
-                      <Text style={styles.bandChipInfo} numberOfLines={1}>
-                        Convite: {studioInviteToken}
-                      </Text>
-                    ) : null}
-                  </View>
-                </View>
-                <View style={styles.bandChipActions}>
-                  <Pressable
-                    onPress={onStudioAgenda}
-                    style={({ pressed }) => [styles.ownerCrudBtn, pressed && styles.pressed]}
-                    accessibilityRole="button"
-                  >
-                    <Text style={styles.ownerCrudBtnText}>Gerenciar salas</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={onStudioAgenda}
-                    style={({ pressed }) => [styles.ownerCrudBtn, pressed && styles.pressed]}
-                    accessibilityRole="button"
-                  >
-                    <Text style={styles.ownerCrudBtnText}>Editar</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void applyRegenerateStudioInvite()}
-                    disabled={studioInviteBusy}
-                    style={({ pressed }) => [styles.ownerCrudBtn, studioInviteBusy && styles.joinBtnOff, pressed && !studioInviteBusy && styles.pressed]}
-                    accessibilityRole="button"
-                  >
-                    <Text style={styles.ownerCrudBtnText}>Novo código</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void toggleStudioPartners()}
-                    style={({ pressed }) => [styles.ownerCrudBtn, pressed && styles.pressed]}
-                    accessibilityRole="button"
-                  >
-                    <Text style={styles.ownerCrudBtnText}>{studioMembersOpen ? 'Ocultar sócios' : 'Ver sócios'}</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void applyDeleteStudio()}
-                    disabled={studioInviteBusy}
-                    style={({ pressed }) => [styles.ownerCrudBtnDanger, studioInviteBusy && styles.joinBtnOff, pressed && !studioInviteBusy && styles.pressed]}
-                    accessibilityRole="button"
-                  >
-                    <Text style={styles.ownerCrudBtnDangerText}>Excluir</Text>
-                  </Pressable>
-                </View>
-                {studioMembersOpen ? (
-                  <View style={styles.membersPanel}>
-                    {studioMembersLoading ? (
-                      <Text style={styles.membersHint}>Carregando sócios...</Text>
-                    ) : studioMembers.length > 0 ? (
-                      studioMembers.map((member) => (
-                        <View key={`studio-${member.userId}`} style={styles.memberRow}>
-                          <Text style={styles.memberName}>
-                            {member.displayName?.trim() || member.email || 'Sócio sem nome'}
-                          </Text>
-                          <Text style={styles.memberMeta}>
-                            {member.role === 'admin' ? 'Administrador' : 'Membro'}
-                            {member.email ? ` · ${member.email}` : ''}
-                          </Text>
-                          {member.userId !== profile.userId ? (
-                            <View style={styles.memberActions}>
-                              <Pressable
-                                onPress={() =>
-                                  askRemoveStudioPartner(
-                                    member.userId,
-                                    member.displayName?.trim() || member.email || 'Sócio',
-                                  )
-                                }
-                                disabled={studioInviteBusy}
-                                style={({ pressed }) => [
-                                  styles.ownerCrudBtnDanger,
-                                  studioInviteBusy && styles.joinBtnOff,
-                                  pressed && !studioInviteBusy && styles.pressed,
-                                ]}
-                                accessibilityRole="button"
-                              >
-                                <Text style={styles.ownerCrudBtnDangerText}>Remover</Text>
-                              </Pressable>
-                            </View>
-                          ) : null}
-                        </View>
-                      ))
-                    ) : (
-                      <Text style={styles.membersHint}>Nenhum sócio visível neste estúdio.</Text>
-                    )}
-                  </View>
-                ) : null}
-              </View>
-            ) : (
-              <Text style={styles.bandsEmpty}>
-                Cadastre um estúdio para ver a lista e os botões de administração.
-              </Text>
-            )}
-          </View>
-          </View>
-        ) : null}
 
         {mode === 'home' && Platform.OS === 'web' ? (
           <Text style={styles.webFootnote}>
@@ -2073,19 +2037,68 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     marginBottom: 20,
   },
+  topMenuWrap: {
+    marginBottom: 18,
+    flexDirection: 'row',
+    gap: 12,
+  },
+  topMenuBtn: {
+    flex: 1,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+    backgroundColor: 'rgba(20, 28, 46, 0.95)',
+    paddingVertical: 13,
+    paddingHorizontal: 14,
+    ...Platform.select({
+      web: { boxShadow: '0 8px 20px rgba(0,0,0,0.2)' },
+      default: {},
+    }),
+  },
+  topMenuBtnAlt: {
+    borderColor: 'rgba(92, 211, 176, 0.35)',
+    backgroundColor: 'rgba(14, 33, 28, 0.92)',
+  },
+  topMenuBtnLabel: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  topMenuBtnMeta: {
+    marginTop: 4,
+    fontSize: 12,
+    color: COLORS.muted,
+  },
+  screenBack: {
+    alignSelf: 'flex-start',
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    marginTop: 4,
+  },
+  screenBackTop: {
+    marginBottom: 14,
+  },
+  screenBackText: {
+    color: COLORS.accent,
+    fontSize: 16,
+    fontWeight: '600',
+  },
   bandHub: {
     backgroundColor: 'rgba(14, 19, 34, 0.94)',
     borderRadius: 20,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.11)',
-    padding: 20,
-    marginBottom: 28,
+    padding: 22,
+    marginBottom: 26,
     ...Platform.select({
       web: {
         boxShadow: '0 18px 42px rgba(0,0,0,0.32)',
       },
       default: {},
     }),
+  },
+  bandHubModeScreen: {
+    paddingTop: 18,
   },
   inviteStandalone: {
     marginBottom: 16,
@@ -2121,10 +2134,10 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   bandHubTitle: {
-    fontSize: 21,
+    fontSize: 22,
     fontWeight: '800',
     color: COLORS.text,
-    lineHeight: 27,
+    lineHeight: 28,
   },
   bandHubLead: {
     marginTop: 10,
@@ -2200,10 +2213,18 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     backgroundColor: COLORS.bgElevated,
   },
+  ownerCrudBtnPrimary: {
+    borderColor: 'rgba(244, 176, 66, 0.42)',
+    backgroundColor: 'rgba(244, 176, 66, 0.16)',
+  },
   ownerCrudBtnText: {
     color: COLORS.text,
     fontSize: 13,
     fontWeight: '700',
+  },
+  ownerCrudBtnPrimaryText: {
+    color: COLORS.accent,
+    fontWeight: '800',
   },
   ownerCrudBtnDanger: {
     paddingVertical: 9,
@@ -2227,16 +2248,16 @@ const styles = StyleSheet.create({
   },
   bandHubGrid: {
     flexDirection: 'column',
-    gap: 18,
+    gap: 20,
   },
   bandHubGridWide: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 20,
+    gap: 22,
   },
   bandHubCol: {
     minWidth: 0,
-    gap: 16,
+    gap: 18,
   },
   bandHubColWide: {
     flex: 1,
@@ -2245,11 +2266,11 @@ const styles = StyleSheet.create({
     marginTop: 20,
   },
   bandPathCard: {
-    backgroundColor: 'rgba(20, 28, 46, 0.94)',
-    borderRadius: 16,
+    backgroundColor: 'rgba(20, 28, 46, 0.96)',
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.13)',
-    padding: 18,
+    borderColor: 'rgba(255,255,255,0.15)',
+    padding: 19,
   },
   bandPathHead: {
     flexDirection: 'row',
@@ -2298,8 +2319,8 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: 'rgba(255, 190, 152, 0.45)',
-    backgroundColor: 'rgba(19, 28, 50, 0.95)',
+    borderColor: 'rgba(255, 190, 152, 0.42)',
+    backgroundColor: 'rgba(16, 24, 42, 0.97)',
   },
   inviteCarouselWrap: {
     marginTop: 14,
@@ -2356,7 +2377,7 @@ const styles = StyleSheet.create({
   },
   invitePanelInner: {
     flex: 1,
-    padding: 16,
+    padding: 18,
     minWidth: 0,
   },
   invitePanelKicker: {
@@ -2488,21 +2509,22 @@ const styles = StyleSheet.create({
   },
   inviteBtnSecondaryText: { color: COLORS.text, fontWeight: '700', fontSize: 14 },
   bandsPanel: {
-    backgroundColor: 'rgba(20, 28, 46, 0.92)',
-    borderRadius: 14,
+    backgroundColor: 'rgba(20, 28, 46, 0.94)',
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-    padding: 18,
+    borderColor: 'rgba(255,255,255,0.14)',
+    padding: 20,
   },
   adminPageWrap: {
-    gap: 12,
+    gap: 16,
   },
   adminPageTitle: {
-    fontSize: 16,
+    fontSize: 20,
     fontWeight: '800',
     color: COLORS.text,
   },
   adminPageLead: {
+    marginTop: 2,
     fontSize: 13,
     color: COLORS.muted,
     lineHeight: 20,
@@ -2517,17 +2539,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.muted,
     lineHeight: 18,
-    marginBottom: 12,
+    marginBottom: 14,
+  },
+  listStack: {
+    gap: 12,
   },
   bandChip: {
-    borderRadius: 12,
-    backgroundColor: COLORS.bg,
+    borderRadius: 16,
+    backgroundColor: 'rgba(10, 15, 28, 0.96)',
     borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingVertical: 12,
+    borderColor: 'rgba(255,255,255,0.16)',
+    paddingVertical: 14,
     paddingHorizontal: 14,
-    position: 'relative',
-    overflow: 'hidden',
   },
   bandChipBackdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -2542,24 +2565,24 @@ const styles = StyleSheet.create({
   },
   bandChipTopRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    alignItems: 'flex-start',
+    gap: 12,
   },
   bandChipSpaced: {
-    marginTop: 10,
+    marginTop: 0,
   },
   bandChipMain: {
     minWidth: 0,
     flex: 1,
   },
   bandChipActions: {
-    marginTop: 10,
+    marginTop: 12,
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
   },
   membersPanel: {
-    marginTop: 10,
+    marginTop: 12,
     borderWidth: 1,
     borderColor: COLORS.border,
     backgroundColor: COLORS.bgElevated,
@@ -2647,7 +2670,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.accent,
     borderRadius: 18,
     padding: 22,
-    marginBottom: 22,
+    marginBottom: 24,
     ...Platform.select({
       web: { boxShadow: '0 16px 32px rgba(244, 176, 66, 0.34)' },
       default: {},

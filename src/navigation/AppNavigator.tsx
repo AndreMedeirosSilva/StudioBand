@@ -7,10 +7,6 @@ import { BookingScreen } from '../screens/BookingScreen';
 import { StudioAgendaScreen } from '../screens/StudioAgendaScreen';
 import {
   emptyOwnerStudioState,
-  makeDemoBookings,
-  makeDemoBlockedRanges,
-  defaultOwnerRooms,
-  DEMO_OWNER_LOGO_URI,
   normalizeOwnerStudioState,
   type OwnerStudioState,
   type StudioRoom,
@@ -53,14 +49,9 @@ function normalizeScreen(raw: string): Screen {
 
 function ownerStudioStateForProfile(profile: UserProfile): OwnerStudioState {
   if (!profile.ownerStudioId) return emptyOwnerStudioState();
-  const rooms = defaultOwnerRooms(profile.ownerStudioId);
   return normalizeOwnerStudioState({
+    ...emptyOwnerStudioState(),
     pricePerHour: 90,
-    addressLine: '',
-    logoUri: DEMO_OWNER_LOGO_URI,
-    rooms,
-    blockedRangesByRoomDate: makeDemoBlockedRanges(rooms),
-    bookings: makeDemoBookings(profile.ownerStudioId, rooms),
   });
 }
 
@@ -93,6 +84,8 @@ export function AppNavigator() {
   const [joinCodePrefill, setJoinCodePrefill] = useState<string | null>(null);
 
   const [screen, setScreen] = useState<Screen>('auth');
+  const [studioAgendaBackScreen, setStudioAgendaBackScreen] = useState<Extract<Screen, 'home' | 'bands' | 'studios'>>('home');
+  const [studioAgendaTarget, setStudioAgendaTarget] = useState<{ id?: string; name?: string } | null>(null);
   const [profile, setProfile] = useState<UserProfile>(initialProfile);
   const [ownerStudio, setOwnerStudio] = useState<OwnerStudioState>(emptyOwnerStudioState);
 
@@ -259,6 +252,14 @@ export function AppNavigator() {
   }, [screen]);
 
   const go = useCallback((s: Screen) => () => setScreen(s), []);
+  const goStudioAgendaFrom = useCallback(
+    (from: Extract<Screen, 'home' | 'bands' | 'studios'>) => (studioId?: string, studioName?: string) => {
+    setStudioAgendaBackScreen(from);
+      setStudioAgendaTarget({ id: studioId, name: studioName });
+    setScreen('studioAgenda');
+    },
+    [],
+  );
 
   const stripJoinFromWebUrl = useCallback(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
@@ -355,7 +356,7 @@ export function AppNavigator() {
           profile={profile}
           ownerStudio={ownerStudio}
           onBook={go('booking')}
-          onStudioAgenda={go('studioAgenda')}
+          onStudioAgenda={goStudioAgendaFrom('home')}
           onLogout={handleLogout}
           joinCodePrefill={joinCodePrefill}
           onConsumeJoinPrefill={consumeJoinPrefill}
@@ -372,7 +373,7 @@ export function AppNavigator() {
           profile={profile}
           ownerStudio={ownerStudio}
           onBook={go('booking')}
-          onStudioAgenda={go('studioAgenda')}
+          onStudioAgenda={goStudioAgendaFrom('bands')}
           onLogout={handleLogout}
           onProfileUpdate={handleProfileUpdate}
           onUpsertStudio={handleUpsertStudio}
@@ -386,7 +387,7 @@ export function AppNavigator() {
           profile={profile}
           ownerStudio={ownerStudio}
           onBook={go('booking')}
-          onStudioAgenda={go('studioAgenda')}
+          onStudioAgenda={goStudioAgendaFrom('studios')}
           onLogout={handleLogout}
           onProfileUpdate={handleProfileUpdate}
           onUpsertStudio={handleUpsertStudio}
@@ -398,12 +399,14 @@ export function AppNavigator() {
       return (
         <StudioAgendaScreen
           profile={profile}
-          onBack={go('home')}
+          onBack={go(studioAgendaBackScreen)}
           onLogout={handleLogout}
           ownerStudio={ownerStudio}
           setOwnerStudio={setOwnerStudio}
           onProfileUpdate={handleProfileUpdate}
           onUpsertStudio={handleUpsertStudio}
+          selectedStudioId={studioAgendaTarget?.id}
+          selectedStudioName={studioAgendaTarget?.name}
         />
       );
     case 'booking':

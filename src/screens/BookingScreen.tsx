@@ -20,6 +20,7 @@ import { DayTimelineInteractive } from '../components/DayTimelineInteractive';
 import { COLORS } from '../theme';
 import { LoggedInUserBar } from '../components/LoggedInUserBar';
 import type { UserProfile } from '../navigation/AppNavigator';
+import { listStudiosForBookingCatalog } from '../registry/localRegistry';
 import {
   listStudiosForBooking,
   getRoomsForStudioRow,
@@ -30,6 +31,7 @@ import {
   isRangeAvailable,
   estimatedPriceCents,
   type OwnerStudioState,
+  type BookingCatalogStudio,
 } from '../data/studioCatalog';
 import { startOfDay, toDateKey, addDays, compareDateKeys } from '../lib/dates';
 import { rangeLabel } from '../lib/schedule';
@@ -66,11 +68,33 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
   const [timelineDragActive, setTimelineDragActive] = useState(false);
   const [scheduleDetailsOpen, setScheduleDetailsOpen] = useState(false);
   const [notes, setNotes] = useState('');
+  const [catalogStudios, setCatalogStudios] = useState<BookingCatalogStudio[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
   const lastCadastroDateKeyRef = useRef<string | null>(null);
 
   const dateKey = toDateKey(selectedDate);
 
-  const rows = useMemo(() => listStudiosForBooking(profile, ownerStudio), [profile, ownerStudio]);
+  useEffect(() => {
+    if (!profile.userId) {
+      setCatalogStudios([]);
+      setCatalogLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setCatalogLoading(true);
+    void (async () => {
+      const rows = await listStudiosForBookingCatalog(profile.userId);
+      if (!cancelled) {
+        setCatalogStudios(rows);
+        setCatalogLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profile.userId]);
+
+  const rows = useMemo(() => listStudiosForBooking(profile, ownerStudio, catalogStudios), [catalogStudios, profile, ownerStudio]);
   const [studioId, setStudioId] = useState(rows[0]?.id ?? '');
   const [bookingStep, setBookingStep] = useState<BookingStep>('studio');
   const [roomId, setRoomId] = useState('');
@@ -151,8 +175,8 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
     const reais = (cents / 100).toFixed(2);
     const noteLine = notes.trim() ? `\nNotas: ${notes.trim()}` : '';
     Alert.alert(
-      'Reserva (demonstração)',
-      `${studio.name}\nSala: ${selectedRoom.name} (${formatRoomCapacity(selectedRoom.capacityPeople)})\n${formatDayLong(selectedDate)}\n${rangeLabel(previewRange)}\n${price > 0 ? `Estimativa: R$ ${reais}\n` : ''}\n${profile.bandName ? `Banda: ${profile.bandName}` : 'Convidado'}${profile.displayName ? `\n${profile.displayName}` : ''}${noteLine}\n\nSem servidor — é só uma simulação.`,
+      'Reserva enviada',
+      `${studio.name}\nSala: ${selectedRoom.name} (${formatRoomCapacity(selectedRoom.capacityPeople)})\n${formatDayLong(selectedDate)}\n${rangeLabel(previewRange)}\n${price > 0 ? `Estimativa: R$ ${reais}\n` : ''}\n${profile.bandName ? `Banda: ${profile.bandName}` : 'Convidado'}${profile.displayName ? `\n${profile.displayName}` : ''}${noteLine}`,
       [{ text: 'OK', onPress: closeCadastro }],
     );
   };
@@ -205,11 +229,18 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
             <View style={styles.sectionHead}>
               <Text style={styles.sectionKicker}>Passo 1</Text>
               <Text style={styles.sectionTitle}>Onde você quer ensaiar?</Text>
-              <Text style={styles.sectionSub}>Escolha um estúdio. Em seguida você vê as salas e o calendário.</Text>
+              <Text style={styles.sectionSub}>
+                Escolha um estúdio da plataforma para ver as salas e abrir o calendário da sala escolhida.
+              </Text>
+              {!catalogLoading ? (
+                <Text style={styles.sectionMeta}>
+                  {rows.length} {rows.length === 1 ? 'estúdio disponível' : 'estúdios disponíveis'}
+                </Text>
+              ) : null}
             </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.studioRow}>
+            {catalogLoading ? <Text style={styles.muted}>Carregando estúdios do Supabase...</Text> : null}
+            <View style={styles.studioList}>
               {rows.map((s) => {
-                const ph = effectivePricePerHour(s, ownerStudio);
                 const nSalas = getRoomsForStudioRow(s, ownerStudio).length;
                 return (
                   <Pressable
@@ -218,40 +249,48 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
                       setStudioId(s.id);
                       setBookingStep('rooms');
                     }}
-                    style={({ pressed }) => [styles.studioCard, pressed && styles.cardPressed]}
+                    style={({ pressed }) => [styles.studioCard, styles.studioCardList, pressed && styles.cardPressed]}
                     accessibilityRole="button"
                   >
-                    <View style={styles.studioCardLogoSlot}>
-                      {s.logoUri ? (
-                        <Image
-                          source={{ uri: s.logoUri }}
-                          style={styles.studioCardLogoImg}
-                          contentFit="cover"
-                        />
-                      ) : (
-                        <View style={styles.studioCardLogoPh}>
-                          <Text style={styles.studioCardLogoPhText}>Logo</Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={styles.studioName}>{s.name}</Text>
-                    <Text style={styles.studioCity}>{s.addressLine || s.city}</Text>
-                    <View style={styles.studioMetaRow}>
-                      <Text style={styles.studioPrice}>{ph > 0 ? `R$ ${ph.toFixed(0)}/hora` : 'Seu estúdio'}</Text>
+                    <View style={styles.studioListItemTop}>
+                      <View style={styles.studioListAvatarWrap}>
+                        {s.logoUri ? (
+                          <Image
+                            source={{ uri: s.logoUri }}
+                            style={styles.studioListAvatarImg}
+                            contentFit="cover"
+                          />
+                        ) : (
+                          <Text style={styles.studioListAvatarFallback}>{s.name.slice(0, 2).toUpperCase()}</Text>
+                        )}
+                      </View>
+                      <View style={styles.studioListMain}>
+                        <Text style={styles.studioNameList} numberOfLines={1}>
+                          {s.name}
+                        </Text>
+                        <Text style={styles.studioCityList} numberOfLines={1}>
+                          {s.addressLine || s.city}
+                        </Text>
+                      </View>
                       <View style={styles.salaPill}>
                         <Text style={styles.salaPillText}>
                           {nSalas} {nSalas === 1 ? 'sala' : 'salas'}
                         </Text>
                       </View>
                     </View>
-                    <View style={styles.studioCtaRow}>
+                    <View style={styles.studioCtaRowList}>
                       <Text style={styles.studioCta}>Ver salas</Text>
                       <Text style={styles.studioCtaArrow}>→</Text>
                     </View>
                   </Pressable>
                 );
               })}
-            </ScrollView>
+            </View>
+            {!catalogLoading && rows.length === 0 ? (
+              <Text style={styles.muted}>
+                Nenhum estúdio público disponível no momento.
+              </Text>
+            ) : null}
           </View>
         ) : null}
 
@@ -390,7 +429,7 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
                     <RoomPhotosStrip uris={selectedRoom.photoUris} title="Fotos da sala" variant="ribbon" thumbSize={88} />
                   </View>
                 ) : (
-                  <Text style={styles.detailsNoPhotos}>Sem fotos desta sala na demonstração do catálogo.</Text>
+                  <Text style={styles.detailsNoPhotos}>Sem fotos desta sala até o momento.</Text>
                 )}
               </View>
             ) : null}
@@ -471,7 +510,7 @@ export function BookingScreen({ profile, ownerStudio, onBack, onLogout }: Props)
                       Este horário conflita com uma reserva ou bloqueio. Ajuste arrastando na linha.
                     </Text>
                   ) : (
-                    <Text style={styles.validationOk}>Horário livre para solicitar reserva (demonstração).</Text>
+                    <Text style={styles.validationOk}>Horário livre para solicitar reserva.</Text>
                   )}
                 </View>
               ) : null}
@@ -544,6 +583,19 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 22, fontWeight: '800', color: COLORS.text, lineHeight: 28 },
   sectionSub: { marginTop: 8, fontSize: 14, color: COLORS.muted, lineHeight: 21 },
+  sectionMeta: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.card,
+    color: COLORS.accent,
+    fontSize: 12,
+    fontWeight: '700',
+  },
   sectionSubEm: { fontWeight: '800', color: COLORS.text },
   scheduleToolbar: {
     flexDirection: 'row',
@@ -603,32 +655,42 @@ const styles = StyleSheet.create({
   },
   detailsPhotos: { marginTop: 4 },
   detailsNoPhotos: { fontSize: 13, color: COLORS.muted, lineHeight: 20, marginTop: 8, fontStyle: 'italic' },
-  studioRow: { gap: 12, paddingVertical: 4, paddingRight: 8, marginHorizontal: -4 },
+  studioList: { gap: 12, paddingVertical: 4 },
   studioCard: {
     width: 212,
-    padding: 0,
-    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: COLORS.border,
-    backgroundColor: COLORS.card,
-    overflow: 'hidden',
+    backgroundColor: COLORS.bgElevated,
   },
-  studioCardLogoSlot: { width: '100%', height: 100, backgroundColor: COLORS.bgElevated },
-  studioCardLogoImg: { width: '100%', height: '100%' },
-  studioCardLogoPh: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  studioCardLogoPhText: { fontSize: 12, fontWeight: '800', color: COLORS.muted },
+  studioCardList: {
+    width: '100%',
+  },
   cardPressed: { opacity: 0.88 },
-  studioName: { fontSize: 17, fontWeight: '800', color: COLORS.text, paddingHorizontal: 16, paddingTop: 14 },
-  studioCity: { marginTop: 6, fontSize: 13, color: COLORS.muted, lineHeight: 18, paddingHorizontal: 16 },
-  studioMetaRow: {
+  studioListItemTop: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 12,
-    paddingHorizontal: 16,
+    gap: 10,
   },
-  studioPrice: { fontSize: 14, fontWeight: '800', color: COLORS.accent },
+  studioListAvatarWrap: {
+    width: 54,
+    height: 54,
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+    backgroundColor: COLORS.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  studioListAvatarImg: { width: '100%', height: '100%' },
+  studioListAvatarFallback: { color: COLORS.text, fontSize: 15, fontWeight: '800' },
+  studioListMain: { minWidth: 0, flex: 1 },
+  studioNameList: { fontSize: 16, fontWeight: '800', color: COLORS.text },
+  studioCityList: { marginTop: 4, fontSize: 13, color: COLORS.muted, lineHeight: 18 },
   salaPill: {
     backgroundColor: 'rgba(255, 190, 152, 0.12)',
     paddingHorizontal: 10,
@@ -636,13 +698,11 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   salaPillText: { fontSize: 12, fontWeight: '700', color: COLORS.accent },
-  studioCtaRow: {
+  studioCtaRowList: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 14,
-    paddingTop: 12,
-    paddingHorizontal: 16,
-    paddingBottom: 16,
+    marginTop: 12,
+    paddingTop: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: COLORS.border,
   },

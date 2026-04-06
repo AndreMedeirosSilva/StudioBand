@@ -58,6 +58,13 @@ export type RemoteOwnedStudioSummary = {
   photoUrl: string | null;
 };
 
+export type RemoteBookingStudioSummary = {
+  id: string;
+  name: string;
+  addressLine: string | null;
+  photoUrl: string | null;
+};
+
 function isMissingRpcError(rawMessage: string, fnName: string): boolean {
   const m = rawMessage.toLowerCase();
   return (
@@ -518,6 +525,45 @@ export async function listOwnedStudiosForUserRemote(userId: string): Promise<Rem
   }));
 }
 
+export async function listStudiosForBookingCatalogRemote(userId: string): Promise<RemoteBookingStudioSummary[]> {
+  const sb = getSupabase();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user || user.id !== userId) return [];
+  const { data: rpcData, error: rpcError } = await sb.rpc('list_public_studios_for_booking');
+  if (!rpcError && rpcData) {
+    type RpcRow = {
+      studio_id: string;
+      studio_name: string;
+      address_line: string | null;
+      photo_url: string | null;
+    };
+    return (rpcData as RpcRow[])
+      .filter((row) => typeof row.studio_name === 'string' && row.studio_name.trim().length > 0)
+      .map((row) => ({
+        id: row.studio_id,
+        name: row.studio_name,
+        addressLine: row.address_line?.trim() || null,
+        photoUrl: row.photo_url?.trim() || null,
+      }));
+  }
+  const { data, error } = await sb
+    .from('studios')
+    .select('id, name, address_line, photo_url')
+    .order('created_at', { ascending: false });
+  if (error || !data) return [];
+  type Row = { id: string; name: string; address_line: string | null; photo_url: string | null };
+  return (data as Row[])
+    .filter((row) => typeof row.name === 'string' && row.name.trim().length > 0)
+    .map((row) => ({
+      id: row.id,
+      name: row.name,
+      addressLine: row.address_line?.trim() || null,
+      photoUrl: row.photo_url?.trim() || null,
+    }));
+}
+
 export async function joinStudioWithInviteRemote(userId: string, inviteToken: string): Promise<RemoteLoginResult> {
   const t = parseInviteToken(inviteToken);
   if (!t) return { ok: false, message: 'Cole um código de convite válido do estúdio.' };
@@ -562,7 +608,10 @@ export async function getManagedStudioInviteTokenRemote(userId: string): Promise
   return regen.ok ? regen.inviteToken : null;
 }
 
-export async function regenerateManagedStudioInviteRemote(userId: string): Promise<{ ok: true; inviteToken: string } | { ok: false; message: string }> {
+export async function regenerateManagedStudioInviteRemote(
+  userId: string,
+  studioId?: string,
+): Promise<{ ok: true; inviteToken: string } | { ok: false; message: string }> {
   const sb = getSupabase();
   const {
     data: { user },
@@ -570,7 +619,7 @@ export async function regenerateManagedStudioInviteRemote(userId: string): Promi
   if (!user || user.id !== userId) {
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
   }
-  const studio = await getManagedStudioSummaryForUser(sb, userId);
+  const studio = studioId ? { id: studioId } : await getManagedStudioSummaryForUser(sb, userId);
   if (!studio) return { ok: false, message: 'Você ainda não administra nenhum estúdio.' };
   const { data, error } = await sb.rpc('admin_regenerate_studio_invite', { p_studio_id: studio.id });
   if (error) return { ok: false, message: mapDbError(error.message) };
@@ -579,13 +628,13 @@ export async function regenerateManagedStudioInviteRemote(userId: string): Promi
   return { ok: true, inviteToken: token };
 }
 
-export async function deleteManagedStudioRemote(userId: string): Promise<RemoteLoginResult> {
+export async function deleteManagedStudioRemote(userId: string, studioId?: string): Promise<RemoteLoginResult> {
   const sb = getSupabase();
   const user = await resolveAuthUser(sb);
   if (!user || user.id !== userId) {
     return { ok: false, message: 'Sessão inválida. Entre de novo.' };
   }
-  const studio = await getManagedStudioSummaryForUser(sb, userId);
+  const studio = studioId ? { id: studioId } : await getManagedStudioSummaryForUser(sb, userId);
   if (!studio) {
     return { ok: false, message: 'Você ainda não administra nenhum estúdio.' };
   }
